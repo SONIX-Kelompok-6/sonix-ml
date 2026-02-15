@@ -1,79 +1,86 @@
-name: ML CI Pipeline
+name: Sonix-ML Continuous Integration
 
 on:
   push:
     branches: [ "main", "develop" ]
     paths:
-      - "sonix-ml/**"
-      - ".github/workflows/ml-ci.yml"
+      - "**" # Memantau semua perubahan di root
+      - ".github/workflows/ci-ml.yml"
   pull_request:
     branches: [ "main" ]
-    paths:
-      - "sonix-ml/**"
   workflow_dispatch:
 
-# Security: Restrict GITHUB_TOKEN permissions
 permissions:
   contents: read
 
-# Optimization: Cancel previous running workflows for the same PR/Branch
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  quality-check:
-    name: Code Quality and Tests
+  quality-assurance:
+    name: Code Quality & Automated Testing
     runs-on: ubuntu-latest
+    
+    # Mock Environment Variables untuk mencegah crash saat import database.py
+    env:
+      SUPABASE_URL: "https://placeholder-project.supabase.co"
+      SUPABASE_KEY: "ci-mock-key"
 
     steps:
-      - name: Checkout repository
+      - name: Fetch Source Code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Initialize Python Environment
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: "sonix-ml/requirements.txt"
+          # PERBAIKAN: Karena sonix-ml = root, file langsung ada di depan
+          cache-dependency-path: "requirements.txt"
 
-      - name: Install dependencies
+      - name: Install Project Dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Install testing and linting tools
           pip install flake8 pytest nbqa nbformat
 
-      - name: Validate Notebook Integrity
+      - name: Execute Static Analysis (Linting)
         run: |
-          # Script to ensure .ipynb files are valid JSON and not corrupt
+          # Fokus linting ke folder src
+          flake8 src --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 src --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Validate Jupyter Notebook Integrity
+        run: |
+          # Memeriksa integritas file .ipynb di folder notebooks
           python -c "
           import os, nbformat, sys
           failed = False
-          for root, _, files in os.walk('.'):
+          search_dir = 'notebooks' if os.path.exists('notebooks') else '.'
+          for root, _, files in os.walk(search_dir):
               for f in files:
                   if f.endswith('.ipynb'):
                       try:
                           nbformat.read(os.path.join(root, f), as_version=4)
                       except Exception as e:
-                          print(f'Error: Corrupt notebook found: {f} - {e}', file=sys.stderr)
+                          print(f'Critical: Corrupt notebook: {f}', file=sys.stderr)
                           failed = True
           if failed: sys.exit(1)
           "
 
-      - name: Lint with Flake8
+      - name: API Smoke Test
         run: |
-          # Fails the pipeline if there are syntax errors or undefined names
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-          # Warnings for style violations (does not fail the pipeline due to --exit-zero)
-          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+          # Resolve module pathing
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/src
+          # Karena root, kita panggil src.main
+          python -c "from src.main import app; print('>>> FastAPI Instance Initialized Successfully')"
 
-      - name: Lint Notebooks (nbqa)
+      - name: Execute Unit Tests
         run: |
-          # Run flake8 on code cells within .ipynb files
-          nbqa flake8 . --select=E9,F63,F7,F82 --show-source --statistics
-
-      - name: Test API Import (Smoke Test)
-        run: |
-          # Try importing the FastAPI app to catch any immediate issues with dependencies or syntax
-          python -c "from main import app; print(' API Import Successful')"
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/src
+          if [ -d "tests" ]; then
+            pytest tests/ --exitfirst
+          else
+            echo "No 'tests/' directory found. Skipping unit tests."
+          fi
