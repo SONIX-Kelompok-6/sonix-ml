@@ -24,6 +24,9 @@ COPY model_artifacts/ model_artifacts/
 # 7. Network: Expose port 8000 (Standard for FastAPI/Uvicorn)
 EXPOSE 8000
 
-# 8. Execution: Launch the application
+# 8. Environment Variables: Set any necessary environment variables for the application
+ENV PYTHONPATH="${PYTHONPATH}:/app/src"
+
+# 9. Execution: Launch the application
 # --host 0.0.0.0 is mandatory for containerized environments to accept external traffic
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
