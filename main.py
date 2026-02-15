@@ -1,92 +1,94 @@
-import pickle
-import pandas as pd
-import tensorflow as tf
-
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import Optional
-from contextlib import asynccontextmanager
-
-# Import logic rekomendasimu
-from recommender import road_recommender, trail_recommender
-
-# --- 1. DEFINISI ARTIFACTS (Wadah Kosong Dulu) ---
-# Kita buat variabel global biar bisa diakses di dalam fungsi endpoint di bawah
-road_artifacts = {}
-trail_artifacts = {}
-
-# --- 2. FUNGSI LOAD MODEL (Dijalankan Sekali saat Start) ---
-# Ini fungsi lifecycle (pengganti @app.on_event("startup") yang lama)
 import os
 import glob
+import pickle
+import logging
+from contextlib import asynccontextmanager
+from typing import Dict, Any, Optional
 
-def get_latest_model_path(base_path):
-    """
-    Mencari sub-folder dengan prefix 'v_' yang paling baru dibuat 
-    di dalam direktori base_path.
-    """
-    # Mencari semua folder yang namanya mulai dengan 'v_'
-    folders = glob.glob(os.path.join(base_path, 'v_*'))
-    
+import pandas as pd
+import tensorflow as tf
+from fastapi import FastAPI, HTTPException
+# Hapus BackgroundTasks karena kita gak perlu simpan background lagi
+from pydantic import BaseModel
+
+# --- Local Imports ---
+from recommender import road_recommender, trail_recommender, collaborative_filtering
+# Hapus save_interaction_routed, kita cuma butuh fetch
+from database import fetch_and_merge_training_data
+
+# --- Logging ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# --- Global Artifacts ---
+road_artifacts: Dict[str, Any] = {}
+trail_artifacts: Dict[str, Any] = {}
+cf_engine: Optional[collaborative_filtering.UserCollaborativeRecommender] = None
+
+# --- Helper: Content-Based Loading ---
+def get_latest_model_path(base_path: str, prefix: str = 'v_') -> str:
+    search_pattern = os.path.join(base_path, f'{prefix}*')
+    folders = glob.glob(search_pattern)
     if not folders:
-        raise FileNotFoundError(f"Tidak ditemukan folder model 'v_*' di {base_path}")
-    
-    # Mengurutkan berdasarkan waktu modifikasi folder (terbaru di akhir)
-    # atau karena formatmu timestamp string (v_YYYYMMDD_HHMMSS), 
-    # diurutkan secara alfabetis pun yang terbaru akan ada di paling bawah.
-    latest_folder = max(folders, key=os.path.getmtime)
-    
-    return latest_folder
+        raise FileNotFoundError(f"No model folders found in {base_path}")
+    return max(folders, key=os.path.getmtime)
 
+def load_cb_artifacts(base_path: str) -> Dict[str, Any]:
+    try:
+        v_path = get_latest_model_path(base_path)
+        logger.info(f"Loading artifact from: {v_path}")
+        
+        with open(os.path.join(v_path, "shoe_metadata.pkl"), "rb") as f:
+            meta = pickle.load(f)
+            
+        return {
+            "df_data": pd.read_pickle(os.path.join(v_path, "shoe_features.pkl")),
+            "encoder_model": tf.keras.models.load_model(os.path.join(v_path, "shoe_encoder.keras")),
+            "kmeans_model": pickle.load(open(os.path.join(v_path, "kmeans_model.pkl"), "rb")),
+            "binary_cols": meta.get('binary_cols'),
+            "continuous_cols": meta.get('continuous_cols'),
+            "X_combined_data": meta.get('X_combined_data')
+        }
+    except Exception as e:
+        logger.error(f"Failed loading CB artifacts: {e}")
+        raise RuntimeError(str(e))
+
+# --- Lifespan (Startup/Shutdown) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # -- LOAD ROAD --
-    print("Loading Road Models...")
-    # Ganti path ini sesuai lokasi aslimu
-    path_road = get_latest_model_path("model_artifacts/road")
+    global road_artifacts, trail_artifacts, cf_engine
     
-    # Load metadata
-    with open(f"{path_road}/shoe_metadata.pkl", "rb") as f:
-        road_meta = pickle.load(f)
-    
-    # Masukkan semua ke dalam tas 'road_artifacts'
-    global road_artifacts
-    road_artifacts = {
-        "df_data": pd.read_pickle(f"{path_road}/shoe_features.pkl"),
-        "encoder_model": tf.keras.models.load_model(f"{path_road}/shoe_encoder.keras"),
-        "kmeans_model": pickle.load(open(f"{path_road}/kmeans_model.pkl", "rb")),
-        "binary_cols": road_meta['binary_cols'],
-        "continuous_cols": road_meta['continuous_cols'],
-        "X_combined_data": road_meta['X_combined_data'] # Atau load manual jika ga ada di meta
-    }
+    logger.info("--- API STARTUP ---")
+    try:
+        # 1. Load Content-Based Models
+        road_artifacts = load_cb_artifacts("model_artifacts/road")
+        trail_artifacts = load_cb_artifacts("model_artifacts/trail")
+        
+        # 2. Load Collaborative Filtering Data & Model
+        # Kita tetap perlu LOAD data dari DB saat startup agar model pintar
+        logger.info("Fetching training data from Supabase...")
+        interaction_df = fetch_and_merge_training_data()
+        
+        logger.info("Initializing CF Engine...")
+        cf_engine = collaborative_filtering.UserCollaborativeRecommender(interaction_df)
+        
+        logger.info("--- API READY ---")
+        
+    except Exception as e:
+        logger.critical(f"Startup Failed: {e}")
+        raise e
 
-    # -- LOAD TRAIL --
-    print("Loading Trail Models...")
-    # Ganti path ini sesuai lokasi aslimu
-    path_trail = get_latest_model_path("model_artifacts/trail")
-    
-    with open(f"{path_trail}/shoe_metadata.pkl", "rb") as f:
-        trail_meta = pickle.load(f)
-
-    global trail_artifacts
-    trail_artifacts = {
-        "df_data": pd.read_pickle(f"{path_trail}/shoe_features.pkl"),
-        "encoder_model": tf.keras.models.load_model(f"{path_trail}/shoe_encoder.keras"),
-        "kmeans_model": pickle.load(open(f"{path_trail}/kmeans_model.pkl", "rb")),
-        "binary_cols": trail_meta['binary_cols'],
-        "continuous_cols": trail_meta['continuous_cols'],
-        "X_combined_data": trail_meta['X_combined_data']
-    }
-    
-    print("All Models Loaded! API Ready.")
     yield
-    # Code setelah yield akan jalan pas aplikasi mati (clean up)
-    print("Shutting down...")
+    
+    logger.info("--- API SHUTDOWN ---")
+    road_artifacts.clear()
+    trail_artifacts.clear()
+    cf_engine = None
 
-# --- 3. INISIALISASI APP ---
-app = FastAPI(title="Shoe Recommender API", lifespan=lifespan)
+# --- App Init ---
+app = FastAPI(title="Sonix-ML Hybrid Recommender", version="2.0", lifespan=lifespan)
 
-# --- 4. SCHEMA INPUT ---
+# --- Schemas ---
 class RoadInput(BaseModel):
     pace: Optional[str] = None
     arch_type: Optional[str] = None
@@ -109,16 +111,71 @@ class TrailInput(BaseModel):
     rock_sensitive: Optional[str] = None
     water_resistance: Optional[str] = None
 
-# --- 5. ENDPOINTS ---
+class UserAction(BaseModel):
+    user_id: int
+    shoe_id: str
+    action_type: str  # "rate" or "like"
+    value: Optional[int] = None # 1-5 for rate, None for like
 
-@app.post("/predict/road")
-def predict_road(prefs: RoadInput):
-    # prefs.dict() mengubah input user jadi dictionary
-    # road_artifacts dikirim supaya fungsi logic bisa pake model yang udah di-load
-    results = road_recommender.get_recommendations(prefs.dict(), road_artifacts)
-    return {"category": "road", "results": results}
+# --- Endpoints ---
 
-@app.post("/predict/trail")
-def predict_trail(prefs: TrailInput):
-    results = trail_recommender.get_recommendations(prefs.dict(), trail_artifacts)
-    return {"category": "trail", "results": results}
+# 1. Content-Based Recommendations
+@app.post("/predict/road", tags=["Content-Based"])
+async def predict_road(prefs: RoadInput):
+    if not road_artifacts: raise HTTPException(503, "Road model not ready")
+    try:
+        results = road_recommender.get_recommendations(prefs.model_dump(), road_artifacts)
+        return {"status": "success", "category": "road", "results": results}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.post("/predict/trail", tags=["Content-Based"])
+async def predict_trail(prefs: TrailInput):
+    if not trail_artifacts: raise HTTPException(503, "Trail model not ready")
+    try:
+        results = trail_recommender.get_recommendations(prefs.model_dump(), trail_artifacts)
+        return {"status": "success", "category": "trail", "results": results}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+# 2. Real-time Collaborative Filtering
+@app.post("/interact", tags=["Real-time Collaborative"])
+async def user_interaction(payload: UserAction):
+    """
+    Menangani aksi User (Like/Rate) UNTUK REKOMENDASI REAL-TIME.
+    Catatan: Penyimpanan ke DB dilakukan oleh Backend Utama, bukan API ini.
+    API ini hanya mengupdate memori sementara (RAM) agar rekomendasi langsung berubah.
+    """
+    global cf_engine
+    if not cf_engine: raise HTTPException(503, "CF Engine not ready")
+    
+    try:
+        is_like = (payload.action_type.lower() == "like")
+        
+        # A. Update Memory & Get Recs (Fast)
+        # Langkah ini PENTING agar user merasa aplikasinya responsif
+        recommendations = cf_engine.get_realtime_recommendations(
+            user_id=payload.user_id,
+            new_item_id=payload.shoe_id,
+            new_rating_val=payload.value,
+            is_like=is_like,
+            n_neighbors=10
+        )
+        
+        # BAGIAN SAVE DB SUDAH DIHAPUS
+        
+        return {
+            "status": "success",
+            "message": "Real-time memory updated",
+            "data": {
+                "triggered_by": payload.shoe_id,
+                "recommendations": recommendations
+            }
+        }
+    except Exception as e:
+        logger.error(f"Interaction Error: {e}")
+        raise HTTPException(500, str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
