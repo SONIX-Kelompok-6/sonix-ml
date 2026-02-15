@@ -8,22 +8,25 @@ from typing import Dict, Any, Optional
 import pandas as pd
 import tensorflow as tf
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # --- Local Module Imports ---
-from recommender import road_recommender, trail_recommender, collaborative_filtering
-from database import fetch_and_merge_training_data
+# Assumes 'src' is in PYTHONPATH or using relative imports within the package
+from .recommender import road_recommender, trail_recommender, collaborative_filtering
+from .database import fetch_and_merge_training_data
 
 # --- Logging Configuration ---
 logging.basicConfig(
     level=logging.INFO, 
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - [%(levelname)s] - %(name)s - %(message)s',
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("sonix_ml_api")
 
 # --- Global In-Memory Artifacts ---
-# Artifacts are stored globally to be accessible by endpoint functions 
-# after being initialized in the lifespan context.
+# These are loaded once during startup to ensure low-latency inference.
 road_artifacts: Dict[str, Any] = {}
 trail_artifacts: Dict[str, Any] = {}
 cf_engine: Optional[collaborative_filtering.UserCollaborativeRecommender] = None
@@ -31,88 +34,121 @@ cf_engine: Optional[collaborative_filtering.UserCollaborativeRecommender] = None
 # --- Utility Functions ---
 
 def get_latest_model_path(base_path: str, prefix: str = 'v_') -> str:
-    """Retrieves the most recent versioned model directory based on modification time."""
+    """
+    Retrieves the most recent versioned model directory based on filesystem modification time.
+    Strategy: automated rollback/rollforward based on the latest folder present.
+    """
     search_pattern = os.path.join(base_path, f'{prefix}*')
     folders = glob.glob(search_pattern)
     if not folders:
-        raise FileNotFoundError(f"No versioned model folders found in: {base_path}")
-    return max(folders, key=os.path.getmtime)
+        raise FileNotFoundError(f"Critical: No model version folders found in {base_path}")
+    
+    # Return the folder with the latest modification timestamp
+    latest_version = max(folders, key=os.path.getmtime)
+    logger.info(f"Version Control: Selected latest artifact '{os.path.basename(latest_version)}'")
+    return latest_version
 
 def load_cb_artifacts(base_path: str) -> Dict[str, Any]:
-    """Loads all required ML artifacts for Content-Based recommendation."""
+    """
+    Loads serialized ML artifacts (Scalers, PCA, Autoencoders, Metadata) into memory.
+    """
     try:
         v_path = get_latest_model_path(base_path)
-        logger.info(f"Loading Content-Based artifacts from: {v_path}")
+        logger.info(f"Loading artifacts from: {v_path}")
         
-        # Load shoe metadata and categorical attributes
+        # 1. Load Metadata (Pandas DataFrame)
         df_meta = pd.read_pickle(os.path.join(v_path, "shoe_metadata.pkl"))
         
-        # Load pre-computed feature matrices for similarity calculation
+        # 2. Load Pre-computed Feature Matrices
         with open(os.path.join(v_path, "shoe_features.pkl"), "rb") as f:
             X_features = pickle.load(f)
             
+        # 3. Load Scikit-Learn Scaler
         with open(os.path.join(v_path, "scaler.pkl"), "rb") as f:
             scaler = pickle.load(f)
+
+        # 4. Load TensorFlow/Keras Autoencoder
+        # Note: 'compile=False' prevents warnings if custom metrics are missing
+        encoder = tf.keras.models.load_model(os.path.join(v_path, "shoe_encoder.keras"), compile=False)
+        
+        # 5. Load K-Means Clusterer
+        with open(os.path.join(v_path, "kmeans_model.pkl"), "rb") as f:
+            kmeans = pickle.load(f)
 
         return {
             "df_data": df_meta, 
             "X_combined_data": X_features,
             "scaler": scaler,
-            "encoder_model": tf.keras.models.load_model(os.path.join(v_path, "shoe_encoder.keras")),
-            "kmeans_model": pickle.load(open(os.path.join(v_path, "kmeans_model.pkl"), "rb")),
+            "encoder_model": encoder,
+            "kmeans_model": kmeans,
             "binary_cols": df_meta.attrs.get('binary_cols', []),
             "continuous_cols": df_meta.attrs.get('continuous_cols', [])
         }
     except Exception as e:
-        logger.error(f"Critical failure during CB artifact loading: {e}")
-        raise RuntimeError(f"Initialization Error: {str(e)}")
+        logger.critical(f"Artifact Loading Failure in {base_path}: {str(e)}")
+        raise RuntimeError(f"Failed to initialize ML engine: {str(e)}")
 
 # --- API Lifespan Management ---
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Handles startup and shutdown events.
-    Pre-loading models into RAM is critical for sub-100ms P95 latency.
+    Orchestrates the application startup and shutdown sequence.
     """
     global road_artifacts, trail_artifacts, cf_engine
     
-    logger.info("Initializing Sonix-ML Hybrid Engine...")
+    logger.info("--- Starting Sonix-ML Hybrid Engine ---")
+    
     try:
-        # 1. Load Content-Based Artifacts for Road and Trail categories
+        # Phase 1: Initialize Content-Based Engines
+        # We load both Road and Trail models into RAM strictly before accepting requests.
         road_artifacts = load_cb_artifacts("model_artifacts/road")
         trail_artifacts = load_cb_artifacts("model_artifacts/trail")
         
-        # 2. Bootstrap Collaborative Filtering with Supabase Data
-        logger.info("Syncing training data from Supabase...")
+        # Phase 2: Bootstrap Collaborative Filtering
+        logger.info("Synchronizing user interaction data from Supabase...")
         interaction_df = fetch_and_merge_training_data()
         
-        logger.info("Initializing Real-time Collaborative Filtering Engine...")
+        logger.info("Initializing Collaborative Filtering (Matrix Factorization)...")
         cf_engine = collaborative_filtering.UserCollaborativeRecommender(interaction_df)
         
-        logger.info("Sonix-ML API v2.0 is now READY.")
+        logger.info("--- Sonix-ML API is READY to serve requests ---")
         
     except Exception as e:
-        logger.critical(f"API Startup Failed: {e}")
+        logger.critical(f"Fatal Startup Error: {e}")
+        # Re-raise to prevent the container from starting in a broken state
         raise e
 
-    yield  # API handles requests
+    yield  # The application runs here
     
-    # Clean up resources on shutdown
-    logger.info("Shutting down API. Clearing memory artifacts...")
+    # Phase 3: Graceful Shutdown
+    logger.info("Shutting down... Cleaning up memory resources.")
     road_artifacts.clear()
     trail_artifacts.clear()
     cf_engine = None
 
-# --- Application Initialization ---
+# --- Application Definition ---
 
 app = FastAPI(
-    title="Sonix-ML Hybrid Recommender", 
-    version="2.0", 
+    title="Sonix-ML Hybrid Recommender API",
+    description="High-performance recommendation engine for running shoes utilizing Deep Autoencoders and Collaborative Filtering.",
+    version="2.0.0",
     lifespan=lifespan
 )
 
-# --- Request Schemas ---
+# --- Middleware Configuration ---
+
+# CORS (Cross-Origin Resource Sharing)
+# Essential for allowing Frontend applications (React, Next.js, Mobile) to communicate with this API.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace "*" with specific frontend domains
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Pydantic Data Models (Schemas) ---
 
 class RoadInput(BaseModel):
     pace: Optional[str] = None
@@ -139,49 +175,76 @@ class TrailInput(BaseModel):
 class UserAction(BaseModel):
     user_id: int
     shoe_id: str
-    action_type: str  # "rate" or "like"
-    value: Optional[int] = None # 1-5 for rating, None for like actions
+    action_type: str  # e.g., "rate", "like", "view"
+    value: Optional[int] = None  # 1-5 for ratings, None for implicit likes
 
 # --- API Endpoints ---
 
-@app.post("/predict/road", tags=["Content-Based"])
-async def predict_road(prefs: RoadInput):
-    """Generates personalized road shoe recommendations based on user bio-mechanics."""
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """
+    Redirects the root URL to the interactive API documentation (Swagger UI).
+    Prevents 404 errors on the home page.
+    """
+    return RedirectResponse(url="/docs")
+
+@app.get("/health")
+async def health_check():
+    """Kubernetes/Docker health probe endpoint."""
+    return {"status": "healthy", "version": "2.0.0"}
+
+@app.post("/recommend/road", tags=["Content-Based Recommendation"])
+async def recommend_road(prefs: RoadInput):
+    """
+    Generates personalized ROAD shoe recommendations.
+    
+    Process:
+    1. Validates user biomechanical inputs.
+    2. Maps inputs to the latent feature space using the Road Autoencoder.
+    3. Performs similarity search within the appropriate K-Means cluster.
+    """
     if not road_artifacts: 
-        raise HTTPException(503, "Road recommendation engine is not initialized.")
+        raise HTTPException(status_code=503, detail="Road engine not initialized")
+    
     try:
-        results = road_recommender.get_recommendations(prefs.model_dump(), road_artifacts)
-        return {"status": "success", "category": "road", "results": results}
+        # Dump Pydantic model to dict, filtering out None values
+        input_data = {k: v for k, v in prefs.model_dump().items() if v is not None}
+        results = road_recommender.get_recommendations(input_data, road_artifacts)
+        return {"status": "success", "category": "road", "data": results}
     except Exception as e:
-        logger.error(f"Road Prediction Error: {e}")
-        raise HTTPException(500, "Internal prediction error.")
+        logger.error(f"Road Inference Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal processing error")
 
-@app.post("/predict/trail", tags=["Content-Based"])
-async def predict_trail(prefs: TrailInput):
-    """Generates personalized trail shoe recommendations with terrain-specific logic."""
+@app.post("/recommend/trail", tags=["Content-Based Recommendation"])
+async def recommend_trail(prefs: TrailInput):
+    """
+    Generates personalized TRAIL shoe recommendations.
+    Includes logic for terrain specificities (Rock Plate, Waterproofing, Lug Depth).
+    """
     if not trail_artifacts: 
-        raise HTTPException(503, "Trail recommendation engine is not initialized.")
+        raise HTTPException(status_code=503, detail="Trail engine not initialized")
+    
     try:
-        results = trail_recommender.get_recommendations(prefs.model_dump(), trail_artifacts)
-        return {"status": "success", "category": "trail", "results": results}
+        input_data = {k: v for k, v in prefs.model_dump().items() if v is not None}
+        results = trail_recommender.get_recommendations(input_data, trail_artifacts)
+        return {"status": "success", "category": "trail", "data": results}
     except Exception as e:
-        logger.error(f"Trail Prediction Error: {e}")
-        raise HTTPException(500, "Internal prediction error.")
+        logger.error(f"Trail Inference Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal processing error")
 
-@app.post("/interact", tags=["Real-time Collaborative"])
+@app.post("/interact", tags=["Collaborative Filtering"])
 async def user_interaction(payload: UserAction):
     """
-    Processes real-time user interactions (Like/Rate) to update the session-based 
-    collaborative filtering model instantly.
+    Records real-time user interactions to update the recommendation engine instantenously.
+    Supports 'Cold Start' mitigation by blending collaborative signals with content attributes.
     """
     if not cf_engine: 
-        raise HTTPException(503, "Collaborative Filtering engine is not initialized.")
+        raise HTTPException(status_code=503, detail="Collaborative engine not initialized")
     
     try:
         is_like = (payload.action_type.lower() == "like")
         
-        # Immediate Memory Update: Ensures recommendations reflect the user's 
-        # latest action without waiting for batch retraining.
+        # Perform partial update on the CF model
         recommendations = cf_engine.get_realtime_recommendations(
             user_id=payload.user_id,
             new_item_id=payload.shoe_id,
@@ -192,17 +255,15 @@ async def user_interaction(payload: UserAction):
         
         return {
             "status": "success",
-            "message": "Real-time user preferences updated.",
-            "data": {
-                "triggered_by": payload.shoe_id,
-                "recommendations": recommendations
-            }
+            "message": "User preference profile updated",
+            "collaborative_candidates": recommendations
         }
     except Exception as e:
-        logger.error(f"Real-time Interaction Error: {e}")
-        raise HTTPException(500, "Failed to process interaction.")
+        logger.error(f"Interaction Processing Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to process interaction")
 
+# --- Execution Entry Point ---
 if __name__ == "__main__":
     import uvicorn
-    # Local development server with auto-reload enabled
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # Note: Host 0.0.0.0 is required for Docker containers
+    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)
