@@ -1,29 +1,39 @@
 name: SONIX-ML CD (Continuous Deployment)
 
-# Trigger deployment only on updates to the main branch
 on:
   push:
     branches: [main]
-
-  # Allow manual trigger from GitHub Actions tab for debugging
+  # Allows manual triggering for testing
   workflow_dispatch:
 
 jobs:
   sync-to-hub:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v3
         with:
-          # Critical: Fetch all history for all branches and tags
-          # Required for 'git push' to function correctly as a mirror
-          fetch-depth: 0
-          # Enable Git Large File Storage (LFS) to handle model artifacts (.h5, .pkl)
+          # Fetch only the latest commit to avoid historical LFS conflicts
+          fetch-depth: 1 
           lfs: true
 
-      - name: Push to Hugging Face Hub
+      - name: Clean Deployment to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # Use --force to enforce a 1:1 mirror between GitHub and Hugging Face.
-          # This overwrites any conflicting history on the remote server.
+          # 1. Remove the existing .git directory to wipe local history in the runner
+          rm -rf .git
+          
+          # 2. Re-initialize a fresh Git environment for deployment
+          git init
+          git config user.name "reivenzz"
+          git config user.email "reivenzz@example.com"
+          git checkout -b main
+          
+          # 3. Stage and commit only the current, active files
+          git add .
+          git commit -m "Deploy latest production version of Sonix-ML"
+          
+          # 4. Force push the clean state to Hugging Face
+          # This overwrites the remote history with a valid, current-only version
           git push --force https://reivenzz:$HF_TOKEN@huggingface.co/spaces/reivenzz/sonix-ml-api main
