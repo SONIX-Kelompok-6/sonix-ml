@@ -6,12 +6,12 @@ on:
   push:
     branches: [ "main", "develop" ]
     paths:
-      - "sonix-ml/**"
-      - ".github/workflows/ci-ml.yml"
+      - "**"                       # Watch all files at the root and subfolders
+      - ".github/workflows/**"      # Watch for changes in the workflow itself
   pull_request:
     branches: [ "main" ]
     paths:
-      - "sonix-ml/**"
+      - "**"                       # Ensure PRs also trigger for root files
   # Allows manual triggering from the GitHub Actions tab
   workflow_dispatch:
 
@@ -50,7 +50,7 @@ jobs:
           python-version: "3.11"
           # Cache pip dependencies to significantly reduce build duration
           cache: "pip"
-          cache-dependency-path: "sonix-ml/requirements.txt"
+          cache-dependency-path: "requirements.txt"
 
       - name: Install Project Dependencies
         run: |
