@@ -6,13 +6,10 @@ on:
   push:
     branches: [ "main", "develop" ]
     paths:
-      - "sonix-ml/**"
+      - "**" # Monitors all changes since the project is at the root
       - ".github/workflows/ci-ml.yml"
   pull_request:
     branches: [ "main" ]
-    paths:
-      - "sonix-ml/**"
-  # Allows manual triggering from the GitHub Actions tab
   workflow_dispatch:
 
 # Security: Set global permissions to read-only for repository contents
@@ -28,6 +25,13 @@ jobs:
   quality-assurance:
     name: Code Quality & Automated Testing
     runs-on: ubuntu-latest
+    
+    # Mock Environment Variables: 
+    # Required to prevent the Supabase client from throwing initialization errors 
+    # during module imports (Smoke Tests/Unit Tests).
+    env:
+      SUPABASE_URL: "https://placeholder-project.supabase.co"
+      SUPABASE_KEY: "ci-mock-key-to-bypass-client-initialization"
 
     # Mock Environment Variables: 
     # Required to prevent the Supabase client from throwing initialization errors 
@@ -46,7 +50,8 @@ jobs:
           python-version: "3.11"
           # Cache pip dependencies to significantly reduce build duration
           cache: "pip"
-          cache-dependency-path: "sonix-ml/requirements.txt"
+          # FIX: Path updated to root as per your project structure
+          cache-dependency-path: "requirements.txt"
 
       - name: Install Project Dependencies
         run: |
@@ -64,11 +69,11 @@ jobs:
       - name: Validate Jupyter Notebook Integrity
         run: |
           # Ensure .ipynb files are valid JSON and conform to the nbformat schema
-          # This prevents corrupted notebook files from being merged into main branches.
           python -c "
           import os, nbformat, sys
           failed = False
-          for root, _, files in os.walk('notebooks'):
+          search_dir = 'notebooks' if os.path.exists('notebooks') else '.'
+          for root, _, files in os.walk(search_dir):
               for f in files:
                   if f.endswith('.ipynb'):
                       try:
@@ -88,11 +93,10 @@ jobs:
 
       - name: Execute Unit Tests
         run: |
-          # Run automated tests to verify the recommendation logic (Road & Trail).
-          # PYTHONPATH is required to ensure 'pytest' can locate the 'src' package.
+          # Run automated tests to verify the recommendation logic.
           export PYTHONPATH=$PYTHONPATH:$(pwd)/src
           if [ -d "tests" ]; then
             pytest tests/ --exitfirst
           else
-            echo "No tests directory found. Skipping unit tests."
+            echo "No 'tests/' directory found. Skipping unit tests."
           fi
