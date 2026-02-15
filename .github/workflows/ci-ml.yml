@@ -1,18 +1,15 @@
 name: Sonix-ML Continuous Integration
 
 # This workflow ensures code quality, validates data artifacts, 
-# and performs smoke tests to prevent regression in the FastAPI application.
+# and performs unit tests to prevent regression in the footwear recommendation logic.
 on:
   push:
     branches: [ "main", "develop" ]
     paths:
-      - "sonix-ml/**"
+      - "**" # Monitors the entire repository as the project is at the root
       - ".github/workflows/ci-ml.yml"
   pull_request:
-    branches: [ "main" ]
-    paths:
-      - "sonix-ml/**"
-  # Allows manual triggering from the GitHub Actions tab
+    branches: [ "main", "develop" ]
   workflow_dispatch:
 
 # Security: Set global permissions to read-only for repository contents
@@ -29,16 +26,11 @@ jobs:
     name: Code Quality & Automated Testing
     runs-on: ubuntu-latest
     
-    defaults:
-      run:
-        working-directory: ./sonix-ml
-
-    # Mock Environment Variables: 
-    # Required to prevent the Supabase client from throwing initialization errors 
-    # during module imports (Smoke Tests/Unit Tests).
+    # Unified Environment Block: Prevents 'env is already defined' syntax errors
+    # Mock credentials allow the Supabase client to initialize safely during tests.
     env:
       SUPABASE_URL: "https://placeholder-project.supabase.co"
-      SUPABASE_KEY: "ci-mock-key-to-bypass-client-initialization"
+      SUPABASE_KEY: "ci-mock-key-for-initialization"
 
     steps:
       - name: Fetch Source Code
@@ -48,55 +40,54 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          # Cache pip dependencies to significantly reduce build duration
           cache: "pip"
-          cache-dependency-path: "sonix-ml/requirements.txt"
+          # FIX: Path updated to root 'requirements-dev.txt' for caching
+          cache-dependency-path: "requirements-dev.txt"
 
       - name: Install Project Dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install flake8 pytest nbqa nbformat
+          # Prioritize the dev requirements to include testing tools like pytest
+          if [ -f requirements-dev.txt ]; then 
+            pip install -r requirements-dev.txt
+          else 
+            pip install -r requirements.txt pytest pytest-mock flake8 nbqa nbformat
+          fi
 
       - name: Execute Static Analysis (Linting)
         run: |
-          # Stop the build if there are Python syntax errors or undefined names
+          # Fails the build on critical syntax errors or undefined names
           flake8 src --count --select=E9,F63,F7,F82 --show-source --statistics
-          # Soft-check for PEP8 compliance and complexity (non-blocking)
+          # Soft-check for PEP8 style compliance and complexity (non-blocking)
           flake8 src --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
       - name: Validate Jupyter Notebook Integrity
         run: |
-          # Ensure .ipynb files are valid JSON and conform to the nbformat schema
-          # This prevents corrupted notebook files from being merged into main branches.
+          # Ensure .ipynb files in the notebooks directory are valid and not corrupt
           python -c "
           import os, nbformat, sys
           failed = False
-          for root, _, files in os.walk('notebooks'):
+          search_dir = 'notebooks' if os.path.exists('notebooks') else '.'
+          for root, _, files in os.walk(search_dir):
               for f in files:
                   if f.endswith('.ipynb'):
                       try:
                           nbformat.read(os.path.join(root, f), as_version=4)
                       except Exception as e:
-                          print(f'Critical: Corrupt notebook detected: {f} - {e}', file=sys.stderr)
+                          print(f'Critical Error: Corrupt notebook {f} - {e}', file=sys.stderr)
                           failed = True
           if failed: sys.exit(1)
           "
 
       - name: API Smoke Test
         run: |
-          # Verify that the FastAPI application can be initialized without runtime errors.
-          # We add the 'src' directory to PYTHONPATH to resolve internal module references.
+          # Verifies that the FastAPI application can be imported without runtime errors.
+          # Inject 'src' into PYTHONPATH to resolve internal module references.
           export PYTHONPATH=$PYTHONPATH:$(pwd)/src
           python -c "from src.main import app; print('>>> FastAPI Instance Initialized Successfully')"
 
       - name: Execute Unit Tests
         run: |
-          # Run automated tests to verify the recommendation logic (Road & Trail).
-          # PYTHONPATH is required to ensure 'pytest' can locate the 'src' package.
+          # Run automated logic tests using pytest.
           export PYTHONPATH=$PYTHONPATH:$(pwd)/src
-          if [ -d "tests" ]; then
-            pytest tests/ --exitfirst
-          else
-            echo "No tests directory found. Skipping unit tests."
-          fi
+          pytest tests/ --exitfirst
