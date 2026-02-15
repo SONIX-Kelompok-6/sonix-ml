@@ -36,18 +36,26 @@ def get_latest_model_path(base_path: str, prefix: str = 'v_') -> str:
 def load_cb_artifacts(base_path: str) -> Dict[str, Any]:
     try:
         v_path = get_latest_model_path(base_path)
-        logger.info(f"Loading artifact from: {v_path}")
+    
+        # Load DataFrame Metadata (Isinya info brand, name, cluster)
+        df_meta = pd.read_pickle(os.path.join(v_path, "shoe_metadata.pkl"))
         
-        with open(os.path.join(v_path, "shoe_metadata.pkl"), "rb") as f:
-            meta = pickle.load(f)
+        # Load Matrix Features (Numpy Array untuk similarity)
+        with open(os.path.join(v_path, "shoe_features.pkl"), "rb") as f:
+            X_features = pickle.load(f)
             
+        # Load Scaler
+        with open(os.path.join(v_path, "scaler.pkl"), "rb") as f:
+            scaler = pickle.load(f)
+
         return {
-            "df_data": pd.read_pickle(os.path.join(v_path, "shoe_features.pkl")),
+            "df_data": df_meta, 
+            "X_combined_data": X_features,
+            "scaler": scaler,
             "encoder_model": tf.keras.models.load_model(os.path.join(v_path, "shoe_encoder.keras")),
             "kmeans_model": pickle.load(open(os.path.join(v_path, "kmeans_model.pkl"), "rb")),
-            "binary_cols": meta.get('binary_cols'),
-            "continuous_cols": meta.get('continuous_cols'),
-            "X_combined_data": meta.get('X_combined_data')
+            "binary_cols": df_meta.attrs.get('binary_cols', []),
+            "continuous_cols": df_meta.attrs.get('continuous_cols', [])
         }
     except Exception as e:
         logger.error(f"Failed loading CB artifacts: {e}")
