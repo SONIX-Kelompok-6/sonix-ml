@@ -1,4 +1,4 @@
-name: Sonix-ML CI (Continuous Integration)
+name: Sonix-ML Continuous Integration
 
 # This workflow ensures code quality, validates data artifacts, 
 # and performs unit tests to prevent regression in the footwear recommendation logic.
