@@ -1,39 +1,46 @@
-name: SONIX-ML CD (Continuous Deployment)
+name: SONIX-ML Continuous Deployment
 
 on:
   push:
     branches: [main]
-  # Allows manual triggering for testing
+  # Allows for manual execution from the Actions tab
   workflow_dispatch:
 
 jobs:
-  sync-to-hub:
+  deploy-to-huggingface:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
         with:
-          # Fetch only the latest commit to avoid historical LFS conflicts
+          # Fetch only the latest state to keep the runner lightweight
           fetch-depth: 1 
           lfs: true
 
-      - name: Clean Deployment to Hugging Face
+      - name: Initialize Clean Deployment Environment
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # 1. Remove the existing .git directory to wipe local history in the runner
+          # 1. Reset the local git state to remove historical binary conflicts
           rm -rf .git
-          
-          # 2. Re-initialize a fresh Git environment for deployment
           git init
-          git config user.name "reivenzz"
-          git config user.email "reivenzz@example.com"
+          
+          # 2. Configure Git LFS within the runner environment
+          # This converts physical binary files into LFS pointers during the push
+          git lfs install
+          git lfs track "*.pkl"
+          git lfs track "*.keras"
+          git lfs track "*.h5"
+          
+          # 3. Set deployment identity using the standard GitHub Actions bot
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # 4. Prepare the production-ready commit
           git checkout -b main
-          
-          # 3. Stage and commit only the current, active files
           git add .
-          git commit -m "Deploy latest production version of Sonix-ML"
+          git commit -m "deploy: production build for sonix-ml-api"
           
-          # 4. Force push the clean state to Hugging Face
-          # This overwrites the remote history with a valid, current-only version
+          # 5. Mirror the clean state to Hugging Face Spaces
+          # Note: --force is required here to overwrite the HF history with the clean version
           git push --force https://reivenzz:$HF_TOKEN@huggingface.co/spaces/reivenzz/sonix-ml-api main
