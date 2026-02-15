@@ -33,6 +33,13 @@ jobs:
       SUPABASE_URL: "https://placeholder-project.supabase.co"
       SUPABASE_KEY: "ci-mock-key-to-bypass-client-initialization"
 
+    # Mock Environment Variables: 
+    # Required to prevent the Supabase client from throwing initialization errors 
+    # during module imports (Smoke Tests/Unit Tests).
+    env:
+      SUPABASE_URL: "https://placeholder-project.supabase.co"
+      SUPABASE_KEY: "ci-mock-key-to-bypass-client-initialization"
+
     steps:
       - name: Fetch Source Code
         uses: actions/checkout@v4
