@@ -25,10 +25,6 @@ jobs:
   quality-check:
     name: Code Quality and Tests
     runs-on: ubuntu-latest
-    
-    defaults:
-      run:
-        working-directory: ./sonix-ml
 
     steps:
       - name: Checkout repository
