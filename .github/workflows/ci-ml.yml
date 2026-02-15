@@ -28,10 +28,6 @@ jobs:
   quality-assurance:
     name: Code Quality & Automated Testing
     runs-on: ubuntu-latest
-    
-    defaults:
-      run:
-        working-directory: ./sonix-ml
 
     # Mock Environment Variables: 
     # Required to prevent the Supabase client from throwing initialization errors 
