@@ -6,10 +6,13 @@ on:
   push:
     branches: [ "main", "develop" ]
     paths:
-      - "**" # Monitors the entire repository as the project is at the root
-      - ".github/workflows/ci-ml.yml"
+      - "**"                       # Watch all files at the root and subfolders
+      - ".github/workflows/**"      # Watch for changes in the workflow itself
   pull_request:
-    branches: [ "main", "develop" ]
+    branches: [ "main" ]
+    paths:
+      - "**"                       # Ensure PRs also trigger for root files
+  # Allows manual triggering from the GitHub Actions tab
   workflow_dispatch:
 
 # Security: Set global permissions to read-only for repository contents
@@ -41,8 +44,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          # FIX: Path updated to root 'requirements-dev.txt' for caching
-          cache-dependency-path: "requirements-dev.txt"
+          cache-dependency-path: "requirements.txt"
 
       - name: Install Project Dependencies
         run: |
