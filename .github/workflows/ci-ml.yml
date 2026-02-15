@@ -76,3 +76,8 @@ jobs:
         run: |
           # Run flake8 on code cells within .ipynb files
           nbqa flake8 . --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Test API Import (Smoke Test)
+        run: |
+          # Try importing the FastAPI app to catch any immediate issues with dependencies or syntax
+          python -c "from main import app; print(' API Import Successful')"
