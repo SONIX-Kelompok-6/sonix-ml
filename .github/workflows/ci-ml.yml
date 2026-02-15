@@ -1,18 +1,22 @@
 name: Sonix-ML Continuous Integration
 
+# This workflow ensures code quality, validates data artifacts, 
+# and performs unit tests to prevent regression in the footwear recommendation logic.
 on:
   push:
     branches: [ "main", "develop" ]
     paths:
-      - "**" 
+      - "**" # Monitors the entire repository as the project is at the root
       - ".github/workflows/ci-ml.yml"
   pull_request:
     branches: [ "main", "develop" ]
   workflow_dispatch:
 
+# Security: Set global permissions to read-only for repository contents
 permissions:
   contents: read
 
+# Optimization: Cancel in-progress builds if a new commit is pushed to the same branch
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -22,10 +26,11 @@ jobs:
     name: Code Quality & Automated Testing
     runs-on: ubuntu-latest
     
-    # Unified Environment Block: Prevents 'env is already defined' error
+    # Unified Environment Block: Prevents 'env is already defined' syntax errors
+    # Mock credentials allow the Supabase client to initialize safely during tests.
     env:
       SUPABASE_URL: "https://placeholder-project.supabase.co"
-      SUPABASE_KEY: "ci-mock-key"
+      SUPABASE_KEY: "ci-mock-key-for-initialization"
 
     steps:
       - name: Fetch Source Code
@@ -36,33 +41,53 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          # Reference the file directly at the root
-          cache-dependency-path: "requirements.txt"
+          # FIX: Path updated to root 'requirements-dev.txt' for caching
+          cache-dependency-path: "requirements-dev.txt"
 
       - name: Install Project Dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install flake8 pytest nbqa nbformat
+          # Prioritize the dev requirements to include testing tools like pytest
+          if [ -f requirements-dev.txt ]; then 
+            pip install -r requirements-dev.txt
+          else 
+            pip install -r requirements.txt pytest pytest-mock flake8 nbqa nbformat
+          fi
 
       - name: Execute Static Analysis (Linting)
         run: |
-          # Fails on syntax errors or undefined names
+          # Fails the build on critical syntax errors or undefined names
           flake8 src --count --select=E9,F63,F7,F82 --show-source --statistics
-          # Soft-check for style violations
+          # Soft-check for PEP8 style compliance and complexity (non-blocking)
           flake8 src --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Validate Jupyter Notebook Integrity
+        run: |
+          # Ensure .ipynb files in the notebooks directory are valid and not corrupt
+          python -c "
+          import os, nbformat, sys
+          failed = False
+          search_dir = 'notebooks' if os.path.exists('notebooks') else '.'
+          for root, _, files in os.walk(search_dir):
+              for f in files:
+                  if f.endswith('.ipynb'):
+                      try:
+                          nbformat.read(os.path.join(root, f), as_version=4)
+                      except Exception as e:
+                          print(f'Critical Error: Corrupt notebook {f} - {e}', file=sys.stderr)
+                          failed = True
+          if failed: sys.exit(1)
+          "
 
       - name: API Smoke Test
         run: |
-          # Inject src into PYTHONPATH to resolve internal module imports
+          # Verifies that the FastAPI application can be imported without runtime errors.
+          # Inject 'src' into PYTHONPATH to resolve internal module references.
           export PYTHONPATH=$PYTHONPATH:$(pwd)/src
           python -c "from src.main import app; print('>>> FastAPI Instance Initialized Successfully')"
 
       - name: Execute Unit Tests
         run: |
+          # Run automated logic tests using pytest.
           export PYTHONPATH=$PYTHONPATH:$(pwd)/src
-          if [ -d "tests" ]; then
-            pytest tests/ --exitfirst
-          else
-            echo "No 'tests/' directory found. Skipping unit tests."
-          fi
+          pytest tests/ --exitfirst

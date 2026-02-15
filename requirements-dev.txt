@@ -1,0 +1,12 @@
+-r requirements.txt
+
+# Testing
+pytest==9.0.2
+iniconfig==2.3.0
+pluggy==1.6.0
+pytest-mock==3.14.0
+
+# Linting & Notebook Validation
+flake8==7.1.1
+nbqa==1.9.1
+nbformat==5.10.4
