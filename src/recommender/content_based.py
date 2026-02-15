@@ -1,10 +1,9 @@
 import numpy as np
 import math
-import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 
 def get_priority_val(user_input, priority_list, mapping_dicts):
-    """Fungsi helper untuk mengambil nilai prioritas."""
+    """Fungsi helper untuk mengambil nilai fitur berdasarkan prioritas input user."""
     for source_key in priority_list:
         if source_key in user_input and user_input[source_key]:
             user_choice = user_input[source_key]
@@ -12,38 +11,38 @@ def get_priority_val(user_input, priority_list, mapping_dicts):
                 mapping = mapping_dicts[source_key]
                 if user_choice in mapping:
                     return mapping[user_choice]
-    return 0.5
+    return 0.5 # Nilai netral jika tidak ada input
 
-def run_recommendation_pipeline(full_vector, valid_idx, artifacts):
+def run_recommendation_pipeline(full_vector_raw, valid_indices, artifacts):
     """
-    Logika inti rekomendasi.
-    Menerima vector yang SUDAH diproses, lalu menjalankan pencarian kandidat.
+    Logika inti: Cluster Routing -> Candidate Filtering -> Masked Cosine Similarity.
     """
-    # Unpack artifacts
     df_data = artifacts['df_data']
     encoder_model = artifacts['encoder_model']
     kmeans_model = artifacts['kmeans_model']
     X_combined_data = artifacts['X_combined_data']
 
-    # 1. Cluster Routing
-    full_vector_np = np.array([full_vector])
+    # 1. Cluster Routing (Encoding user input ke Latent Space)
+    full_vector_np = np.array([full_vector_raw])
     user_latent = encoder_model.predict(full_vector_np, verbose=0)
-    distances = kmeans_model.transform(user_latent)[0]
     
+    # Cari cluster terdekat
+    distances = kmeans_model.transform(user_latent)[0]
     n_select = math.ceil(kmeans_model.n_clusters / 3) 
     closest_clusters = np.argsort(distances)[:n_select]
     
-    # 2. Filter Candidates
+    # 2. Filter Kandidat berdasarkan Cluster
     candidates = df_data[df_data['cluster'].isin(closest_clusters)].copy()
     if candidates.empty: 
         return []
     
     # 3. Masked Similarity Calculation
+    # Hanya menghitung kemiripan pada kolom yang diinput user
     candidate_indices = candidates.index
     candidate_vectors = X_combined_data[candidate_indices]
     
-    user_vec_masked = full_vector_np[:, valid_idx]
-    cand_vecs_masked = candidate_vectors[:, valid_idx]
+    user_vec_masked = full_vector_np[:, valid_indices]
+    cand_vecs_masked = candidate_vectors[:, valid_indices]
     
     if np.all(user_vec_masked == 0):
         scores = np.zeros(len(candidates))
@@ -52,6 +51,6 @@ def run_recommendation_pipeline(full_vector, valid_idx, artifacts):
     
     candidates['match_score'] = scores
     
-    # 4. Return Top 10
+    # 4. Return Top 10 Shoes
     top_shoes = candidates.sort_values('match_score', ascending=False).head(10)
     return top_shoes.to_dict(orient='records')

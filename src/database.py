@@ -117,3 +117,34 @@ def save_interaction_routed(user_id: int, shoe_id: str, action_type: str, rating
             
     except Exception as e:
         print(f"[Database] Failed to save interaction: {e}")
+
+def fetch_shoes_by_type(shoe_type: str) -> pd.DataFrame:
+    """
+    Mengambil data sepatu dari tabel 'shoes' berdasarkan tipe.
+    shoe_type: 'road' (id diawali R) atau 'trail' (id diawali T)
+    """
+    if not supabase:
+        print("❌ Supabase client not initialized.")
+        return pd.DataFrame()
+
+    # Tentukan filter berdasarkan awalan ID
+    prefix = "R" if shoe_type.lower() == "road" else "T"
+    
+    print(f"🔄 Fetching {shoe_type.upper()} shoes from Supabase...")
+    
+    try:
+        # Mengambil data dengan filter ilike (case-insensitive)
+        # Misal: shoe_id like 'R%'
+        response = supabase.table("shoes").select("*").ilike("shoe_id", f"{prefix}%").execute()
+        
+        if not response.data:
+            print(f"⚠️ No {shoe_type} shoes found in database.")
+            return pd.DataFrame()
+            
+        df = pd.DataFrame(response.data)
+        print(f"✅ Successfully loaded {len(df)} {shoe_type} shoes.")
+        return df
+
+    except Exception as e:
+        print(f"❌ Error fetching {shoe_type} shoes: {e}")
+        return pd.DataFrame()
