@@ -1,38 +1,74 @@
+"""
+Sonix-ML Neural Architecture
+----------------------------
+Defines the Deep Autoencoder structure used for dimensionality reduction 
+and feature extraction of shoe attributes.
+
+The architecture follows a symmetrical bottleneck design:
+Input (N-dim) -> Compressed (32D) -> Compressed (16D) -> Latent (8D) -> Reconstruction.
+"""
+
 import tensorflow as tf
 from tensorflow.keras import layers, Model, optimizers
+from typing import Tuple, List
 
-def build_autoencoder(input_dim: int, encoding_dims=[32, 16, 8], dropout_rate=0.3):
+def build_autoencoder(input_dim: int, 
+                      encoding_dims: List[int] = [32, 16, 8], 
+                      dropout_rate: float = 0.3) -> Tuple[Model, Model]:
     """
-    Membangun model Autoencoder dan Encoder terpisah.
-    Input_dim akan menyesuaikan apakah itu Road atau Trail.
+    Constructs a Deep Autoencoder and a standalone Encoder model.
+    
+    The Encoder is used during inference to project user preferences into 
+    the Latent Space for cluster routing.
+
+    Args:
+        input_dim: Number of input features (varies between Road and Trail).
+        encoding_dims: List of neurons for each progressive compression layer.
+        dropout_rate: Regularization rate to prevent overfitting.
+
+    Returns:
+        Tuple: (Full Autoencoder Model, Inference-only Encoder Model).
     """
-    # Encoder
-    input_layer = layers.Input(shape=(input_dim,))
+    
+    # --- ENCODER SECTION ---
+    # Responsibility: Compress raw features into a dense latent representation.
+    input_layer = layers.Input(shape=(input_dim,), name="feature_input")
     x = input_layer
-    for dim in encoding_dims:
-        x = layers.Dense(dim, activation='relu')(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Dropout(dropout_rate)(x)
+    
+    for i, dim in enumerate(encoding_dims):
+        x = layers.Dense(dim, activation='relu', name=f"encoder_dense_{i}")(x)
+        # BatchNormalization stabilizes training and speeds up convergence
+        x = layers.BatchNormalization(name=f"encoder_bn_{i}")(x)
+        # Dropout ensures the model doesn't memorize specific training examples
+        x = layers.Dropout(dropout_rate, name=f"encoder_dropout_{i}")(x)
 
-    latent = x  # Latent space (8D)
+    latent_space = x  # The bottleneck (8D representation)
 
-    # Decoder
-    for dim in reversed(encoding_dims[:-1]):
-        x = layers.Dense(dim, activation='relu')(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Dropout(dropout_rate)(x)
+    # --- DECODER SECTION ---
+    # Responsibility: Reconstruct the original input from the latent space.
+    # This phase is only used during training (MSE loss calculation).
+    for i, dim in enumerate(reversed(encoding_dims[:-1])):
+        x = layers.Dense(dim, activation='relu', name=f"decoder_dense_{i}")(x)
+        x = layers.BatchNormalization(name=f"decoder_bn_{i}")(x)
+        x = layers.Dropout(dropout_rate, name=f"decoder_dropout_{i}")(x)
 
-    output_layer = layers.Dense(input_dim, activation='sigmoid')(x)
+    # Output uses sigmoid activation to match normalized input range (0 to 1)
+    output_layer = layers.Dense(input_dim, activation='sigmoid', name="reconstruction_output")(x)
 
-    # Full Model
-    autoencoder = Model(input_layer, output_layer)
-    # Model untuk ambil vector latent (Inference)
-    encoder = Model(input_layer, latent)
+    # --- MODEL COMPILATION ---
+    
+    # 1. Full Autoencoder (Trainable)
+    autoencoder = Model(inputs=input_layer, outputs=output_layer, name="Sonix_Autoencoder")
+    
+    # 2. Standalone Encoder (Inference-only)
+    # This model shares weights with the autoencoder but stops at the latent space.
+    encoder = Model(inputs=input_layer, outputs=latent_space, name="Sonix_Encoder")
 
+    # Adam optimizer with Mean Squared Error (MSE) loss is the standard for reconstruction tasks.
     autoencoder.compile(
-        optimizer=optimizers.Adam(0.001),
+        optimizer=optimizers.Adam(learning_rate=0.001),
         loss='mse',
-        metrics=['mae']
+        metrics=['mae'] # Mean Absolute Error for human-readable performance tracking
     )
     
     return autoencoder, encoder
