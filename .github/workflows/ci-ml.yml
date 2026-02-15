@@ -9,7 +9,7 @@ on:
       - "**"                       # Watch all files at the root and subfolders
       - ".github/workflows/**"      # Watch for changes in the workflow itself
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]
     paths:
       - "**"                       # Ensure PRs also trigger for root files
   # Allows manual triggering from the GitHub Actions tab
