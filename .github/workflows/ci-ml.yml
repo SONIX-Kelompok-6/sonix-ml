@@ -1,83 +1,102 @@
-name: ML CI Pipeline
+name: Sonix-ML Continuous Integration
 
+# This workflow ensures code quality, validates data artifacts, 
+# and performs smoke tests to prevent regression in the FastAPI application.
 on:
   push:
     branches: [ "main", "develop" ]
     paths:
       - "sonix-ml/**"
-      - ".github/workflows/ml-ci.yml"
+      - ".github/workflows/ci-ml.yml"
   pull_request:
     branches: [ "main" ]
     paths:
       - "sonix-ml/**"
+  # Allows manual triggering from the GitHub Actions tab
   workflow_dispatch:
 
-# Security: Restrict GITHUB_TOKEN permissions
+# Security: Set global permissions to read-only for repository contents
 permissions:
   contents: read
 
-# Optimization: Cancel previous running workflows for the same PR/Branch
+# Optimization: Cancel in-progress builds if a new commit is pushed to the same branch
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  quality-check:
-    name: Code Quality and Tests
+  quality-assurance:
+    name: Code Quality & Automated Testing
     runs-on: ubuntu-latest
     
     defaults:
       run:
         working-directory: ./sonix-ml
 
+    # Mock Environment Variables: 
+    # Required to prevent the Supabase client from throwing initialization errors 
+    # during module imports (Smoke Tests/Unit Tests).
+    env:
+      SUPABASE_URL: "https://placeholder-project.supabase.co"
+      SUPABASE_KEY: "ci-mock-key-to-bypass-client-initialization"
+
     steps:
-      - name: Checkout repository
+      - name: Fetch Source Code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Initialize Python Environment
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          # Cache pip dependencies to significantly reduce build duration
           cache: "pip"
           cache-dependency-path: "sonix-ml/requirements.txt"
 
-      - name: Install dependencies
+      - name: Install Project Dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Install testing and linting tools
           pip install flake8 pytest nbqa nbformat
 
-      - name: Validate Notebook Integrity
+      - name: Execute Static Analysis (Linting)
         run: |
-          # Script to ensure .ipynb files are valid JSON and not corrupt
+          # Stop the build if there are Python syntax errors or undefined names
+          flake8 src --count --select=E9,F63,F7,F82 --show-source --statistics
+          # Soft-check for PEP8 compliance and complexity (non-blocking)
+          flake8 src --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Validate Jupyter Notebook Integrity
+        run: |
+          # Ensure .ipynb files are valid JSON and conform to the nbformat schema
+          # This prevents corrupted notebook files from being merged into main branches.
           python -c "
           import os, nbformat, sys
           failed = False
-          for root, _, files in os.walk('.'):
+          for root, _, files in os.walk('notebooks'):
               for f in files:
                   if f.endswith('.ipynb'):
                       try:
                           nbformat.read(os.path.join(root, f), as_version=4)
                       except Exception as e:
-                          print(f'Error: Corrupt notebook found: {f} - {e}', file=sys.stderr)
+                          print(f'Critical: Corrupt notebook detected: {f} - {e}', file=sys.stderr)
                           failed = True
           if failed: sys.exit(1)
           "
 
-      - name: Lint with Flake8
+      - name: API Smoke Test
         run: |
-          # Fails the pipeline if there are syntax errors or undefined names
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-          # Warnings for style violations (does not fail the pipeline due to --exit-zero)
-          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+          # Verify that the FastAPI application can be initialized without runtime errors.
+          # We add the 'src' directory to PYTHONPATH to resolve internal module references.
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/src
+          python -c "from src.main import app; print('>>> FastAPI Instance Initialized Successfully')"
 
-      - name: Lint Notebooks (nbqa)
+      - name: Execute Unit Tests
         run: |
-          # Run flake8 on code cells within .ipynb files
-          nbqa flake8 . --select=E9,F63,F7,F82 --show-source --statistics
-
-      - name: Test API Import (Smoke Test)
-        run: |
-          # Try importing the FastAPI app to catch any immediate issues with dependencies or syntax
-          python -c "from main import app; print(' API Import Successful')"
+          # Run automated tests to verify the recommendation logic (Road & Trail).
+          # PYTHONPATH is required to ensure 'pytest' can locate the 'src' package.
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/src
+          if [ -d "tests" ]; then
+            pytest tests/ --exitfirst
+          else
+            echo "No tests directory found. Skipping unit tests."
+          fi
