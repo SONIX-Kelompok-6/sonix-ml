@@ -154,7 +154,6 @@ async def user_interaction(payload: UserAction):
     Catatan: Penyimpanan ke DB dilakukan oleh Backend Utama, bukan API ini.
     API ini hanya mengupdate memori sementara (RAM) agar rekomendasi langsung berubah.
     """
-    global cf_engine
     if not cf_engine: raise HTTPException(503, "CF Engine not ready")
     
     try:

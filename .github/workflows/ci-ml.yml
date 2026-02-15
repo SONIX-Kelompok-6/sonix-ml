@@ -7,7 +7,7 @@ on:
       - "**" 
       - ".github/workflows/ci-ml.yml"
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]
   workflow_dispatch:
 
 permissions:
@@ -22,7 +22,7 @@ jobs:
     name: Code Quality & Automated Testing
     runs-on: ubuntu-latest
     
-    # PERBAIKAN 1: Gabungkan semua env di sini (Hanya satu blok env)
+    # Unified Environment Block: Prevents 'env is already defined' error
     env:
       SUPABASE_URL: "https://placeholder-project.supabase.co"
       SUPABASE_KEY: "ci-mock-key"
@@ -36,7 +36,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          # PERBAIKAN 2: Gunakan path langsung ke root
+          # Reference the file directly at the root
           cache-dependency-path: "requirements.txt"
 
       - name: Install Project Dependencies
@@ -47,11 +47,22 @@ jobs:
 
       - name: Execute Static Analysis (Linting)
         run: |
+          # Fails on syntax errors or undefined names
           flake8 src --count --select=E9,F63,F7,F82 --show-source --statistics
+          # Soft-check for style violations
           flake8 src --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
       - name: API Smoke Test
         run: |
-          # Pastikan Python bisa menemukan folder src
+          # Inject src into PYTHONPATH to resolve internal module imports
           export PYTHONPATH=$PYTHONPATH:$(pwd)/src
           python -c "from src.main import app; print('>>> FastAPI Instance Initialized Successfully')"
+
+      - name: Execute Unit Tests
+        run: |
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/src
+          if [ -d "tests" ]; then
+            pytest tests/ --exitfirst
+          else
+            echo "No 'tests/' directory found. Skipping unit tests."
+          fi
