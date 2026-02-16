@@ -12,6 +12,9 @@ from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # --- Local Module Imports ---
 # Assumes 'src' is in PYTHONPATH or using relative imports within the package
 from .recommender import road_recommender, trail_recommender, collaborative_filtering
