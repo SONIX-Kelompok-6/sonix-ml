@@ -12,6 +12,9 @@ from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # --- Local Module Imports ---
 # Assumes 'src' is in PYTHONPATH or using relative imports within the package
 from .recommender import road_recommender, trail_recommender, collaborative_filtering
@@ -101,7 +104,7 @@ async def lifespan(app: FastAPI):
     
     try:
         # Phase 1: Initialize Content-Based Engines
-        # We load both Road and Trail models into RAM strictly before accepting requests.
+        # Load both Road and Trail models into RAM strictly before accepting requests.
         road_artifacts = load_cb_artifacts("model_artifacts/road")
         trail_artifacts = load_cb_artifacts("model_artifacts/trail")
         
@@ -109,8 +112,16 @@ async def lifespan(app: FastAPI):
         logger.info("Synchronizing user interaction data from Supabase...")
         interaction_df = fetch_and_merge_training_data()
         
+        # Load master shoe metadata for enrichment of CF recommendations
+        master_metadata = road_artifacts['df_data'] 
+        
         logger.info("Initializing Collaborative Filtering (Matrix Factorization)...")
-        cf_engine = collaborative_filtering.UserCollaborativeRecommender(interaction_df)
+        
+        # Insert the master metadata into the CF engine for enrichment purposes
+        cf_engine = collaborative_filtering.UserCollaborativeRecommender(
+            df_interactions=interaction_df, 
+            shoe_metadata=master_metadata
+        )
         
         logger.info("--- Sonix-ML API is READY to serve requests ---")
         
@@ -261,6 +272,37 @@ async def user_interaction(payload: UserAction):
     except Exception as e:
         logger.error(f"Interaction Processing Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to process interaction")
+
+# Tambahkan endpoint ini di main.py
+
+@app.get("/recommend/user/{user_id}", tags=["Collaborative Filtering"])
+async def get_user_feed(user_id: int):
+    """
+    Fetch 'You Might Also Like' recommendations based on user's PAST history.
+    Used for populating the Home Feed on page load.
+    """
+    if not cf_engine:
+        raise HTTPException(status_code=503, detail="Collaborative engine not initialized")
+    
+    try:
+        # Panggil fungsi yang SAMA, tapi tanpa parameter interaction (item_id & rating)
+        # Engine akan otomatis menggunakan data historis yang ada di memori.
+        recommendations = cf_engine.get_realtime_recommendations(
+            user_id=user_id,
+            new_item_id=None,  # Tidak ada aksi baru
+            new_rating_val=None
+        )
+        
+        # Jika user baru (belum ada history), return list kosong []
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "data": recommendations
+        }
+            
+    except Exception as e:
+        logger.error(f"Feed Retrieval Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch user feed")
 
 # --- Execution Entry Point ---
 if __name__ == "__main__":
