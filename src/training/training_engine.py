@@ -12,6 +12,9 @@ Workflow:
 5. Artifact Serialization (Models, Scalers, and Metadata)
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import pickle
 import logging
@@ -89,7 +92,7 @@ def run_training(shoe_type: str):
     os.makedirs(save_path, exist_ok=True)
 
     # A. Encoder Model (TensorFlow Keras format)
-    encoder.save(os.path.join(save_path, "shoe_encoder.keras"))
+    encoder.save(os.path.join(save_path, "shoe_encoder.h5"))
     
     # B. K-Means Model (Pickle format)
     with open(os.path.join(save_path, "kmeans_model.pkl"), "wb") as f:

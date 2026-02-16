@@ -57,7 +57,7 @@ def load_cb_artifacts(base_path: str) -> Dict[str, Any]:
         with open(os.path.join(v_path, "scaler.pkl"), "rb") as f:
             scaler = pickle.load(f)
         
-        encoder = tf.keras.models.load_model(os.path.join(v_path, "shoe_encoder.keras"), compile=False)
+        encoder = tf.keras.models.load_model(os.path.join(v_path, "shoe_encoder.h5"), compile=False)
         
         with open(os.path.join(v_path, "kmeans_model.pkl"), "rb") as f:
             kmeans = pickle.load(f)
