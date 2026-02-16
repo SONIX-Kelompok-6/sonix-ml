@@ -34,7 +34,7 @@ jobs:
           # These secrets must be defined in: Settings > Secrets and variables > Actions
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: python -m src.training.engine
+        run: python -m src.training.training_engine
 
       # 5. VERSION CONTROL: Commits the newly generated .pkl and .keras artifacts.
       # This ensures the 'main.py' API can find the latest version in the next reload.
