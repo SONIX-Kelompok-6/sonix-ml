@@ -3,6 +3,9 @@ name: SONIX-ML Continuous Deployment
 on:
   push:
     branches: [main]
+  workflow_run:
+    workflows: ["SONIX-ML Continuous Training"]
+    types: [completed]
   # Allows for manual execution from the Actions tab
   workflow_dispatch:
 
