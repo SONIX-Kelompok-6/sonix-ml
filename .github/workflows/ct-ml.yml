@@ -50,5 +50,8 @@ jobs:
           # Commit only if changes were made to the artifacts
           git commit -m "auto: retrained CB models due to new shoe addition" || echo "No changes to commit"
           
+          # Pull the latest changes to avoid conflicts (if any) before pushing
+          git pull --rebase origin main
+
           # Push the updates back to the main branch
           git push
