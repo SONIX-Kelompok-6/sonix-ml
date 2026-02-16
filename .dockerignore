@@ -1,0 +1,24 @@
+# Git
+.git
+.gitignore
+
+# Environments and Secrets
+.env
+env/
+__pycache__/
+*.pyc
+
+# Testing and Load Testing
+locustfile.py
+tests/
+.pytest_cache/
+htmlcov/
+
+# Documentation and Metadata
+.vscode/
+.idea/
+
+# Large data files
+*.csv
+*.json
+!master_metadata.json

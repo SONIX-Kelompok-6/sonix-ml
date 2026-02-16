@@ -1,0 +1,54 @@
+# Name of the workflow as it appears in the GitHub Actions tab
+name: SONIX-ML Continuous Training
+
+# EXTERNAL TRIGGER: This workflow waits for a "Repository Dispatch" event.
+# It only runs when Supabase sends a POST request with the 'shoe_data_changed' event type.
+on:
+  repository_dispatch:
+    types: [shoe_data_changed]
+
+jobs:
+  build:
+    # Uses the latest Ubuntu environment provided by GitHub
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Pulls the latest code from your repository into the runner
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. Sets up the Python environment (matching your project requirements)
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      # 3. Installs required libraries (TensorFlow, Scikit-learn, Pandas, etc.)
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      # 4. EXECUTION: Runs the training engine for both Road and Trail categories.
+      # It requires Supabase credentials to pull the latest shoe metadata.
+      - name: Run Training Engine
+        env:
+          # These secrets must be defined in: Settings > Secrets and variables > Actions
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python -m src.training.engine
+
+      # 5. VERSION CONTROL: Commits the newly generated .pkl and .keras artifacts.
+      # This ensures the 'main.py' API can find the latest version in the next reload.
+      - name: Commit and Push New Artifacts
+        run: |
+          # Configure a temporary Git user for the Action
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Stage the new versioned folders (e.g., model_artifacts/road/v_2026...)
+          git add model_artifacts/
+          
+          # Commit only if changes were made to the artifacts
+          git commit -m "auto: retrained CB models due to new shoe addition" || echo "No changes to commit"
+          
+          # Push the updates back to the main branch
+          git push
