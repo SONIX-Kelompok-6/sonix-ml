@@ -101,7 +101,7 @@ async def lifespan(app: FastAPI):
     
     try:
         # Phase 1: Initialize Content-Based Engines
-        # We load both Road and Trail models into RAM strictly before accepting requests.
+        # Load both Road and Trail models into RAM strictly before accepting requests.
         road_artifacts = load_cb_artifacts("model_artifacts/road")
         trail_artifacts = load_cb_artifacts("model_artifacts/trail")
         
@@ -109,8 +109,16 @@ async def lifespan(app: FastAPI):
         logger.info("Synchronizing user interaction data from Supabase...")
         interaction_df = fetch_and_merge_training_data()
         
+        # Load master shoe metadata for enrichment of CF recommendations
+        master_metadata = road_artifacts['df_data'] 
+        
         logger.info("Initializing Collaborative Filtering (Matrix Factorization)...")
-        cf_engine = collaborative_filtering.UserCollaborativeRecommender(interaction_df)
+        
+        # Insert the master metadata into the CF engine for enrichment purposes
+        cf_engine = collaborative_filtering.UserCollaborativeRecommender(
+            df_interactions=interaction_df, 
+            shoe_metadata=master_metadata
+        )
         
         logger.info("--- Sonix-ML API is READY to serve requests ---")
         

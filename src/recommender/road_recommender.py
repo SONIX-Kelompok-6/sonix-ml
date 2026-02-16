@@ -162,6 +162,6 @@ def get_recommendations(user_input: Dict[str, Any], artifacts: Dict[str, Any]) -
     full_vector, valid_idx = preprocess_road_input(
         user_input, 
         artifacts['binary_cols'], 
-        artifacts['artifacts_continuous_cols']
+        artifacts['continuous_cols']
     )
     return run_recommendation_pipeline(full_vector, valid_idx, artifacts)

@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from scipy.sparse import csr_matrix
 from sklearn.neighbors import NearestNeighbors
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Any, cast
 
 # Configure logger for tracking engine initialization and runtime errors
 logger = logging.getLogger(__name__)
@@ -13,23 +13,23 @@ class UserCollaborativeRecommender:
     User-Based Collaborative Filtering (UBCF) Engine.
     
     This memory-based recommender identifies similar users based on interaction history
-    and suggests items liked by those 'neighbors'.
-    
-    Features:
-    - Symmetric rating scale (-2.0 to +2.0) to handle both positive and negative sentiment.
-    - Sparse Matrix implementation for memory efficiency.
-    - Real-time Injection: Instantly updates user profile in-memory for immediate feedback.
+    and suggests items liked by those 'neighbors'. It supports real-time profile 
+    injection to solve the immediate 'Cold Start' problem for active sessions.
     """
 
-    def __init__(self, df_interactions: pd.DataFrame):
+    def __init__(self, df_interactions: pd.DataFrame, shoe_metadata: pd.DataFrame):
         """
-        Initializes the engine by pivoting data and fitting the k-Nearest Neighbors model.
+        Initializes the engine by constructing the User-Item Matrix and fitting the k-NN model.
         
         Args:
-            df_interactions: DataFrame containing ['user_id', 'item_id', 'rating']
+            df_interactions (pd.DataFrame): Historical data containing ['user_id', 'item_id', 'rating'].
+            shoe_metadata (pd.DataFrame): Full catalog of shoes (cols: shoe_id, name, image_url, etc.)
+                                          used for result enrichment.
         """
+        self.shoe_metadata = shoe_metadata
+
         if df_interactions.empty:
-            logger.warning("CF Engine: No interaction data found. Operating in Cold Start mode.")
+            logger.warning("CF Engine: No interaction data found. Operating in Passive Mode.")
             self.user_ids = []
             self.item_ids = []
             return
@@ -49,6 +49,7 @@ class UserCollaborativeRecommender:
         self.item_map = {iid: i for i, iid in enumerate(self.item_ids)}
         
         # 3. Model Fitting: Using Cosine Similarity to find similar user vectors
+        # brute force is acceptable for small-to-medium datasets (<100k users)
         self.sparse_matrix = csr_matrix(self.pivot_df.values)
         self.model = NearestNeighbors(metric='cosine', algorithm='brute')
         self.model.fit(self.sparse_matrix)
@@ -57,16 +58,12 @@ class UserCollaborativeRecommender:
 
     def _convert_rating(self, rating: Optional[int], is_like_action: bool = False) -> float:
         """
-        Maps raw input (1-5 stars or 'likes') to a symmetric preference scale.
-        
-        Logic:
-        - Symmetric scale (-2.0 to +2.0) allows the model to differentiate between 
-          active dislike and simple lack of interaction.
+        Maps raw input (1-5 stars or 'likes') to a symmetric preference scale (-2.0 to +2.0).
         """
         if is_like_action:
             return 1.0  # Positive signal for "Like" button
         
-        # Neutral-Positive default (0.1) for views or zero-ratings to avoid zero-vector issues
+        # Neutral-Positive default (0.1) for views/implicit signals
         if rating is None or rating == 0:
             return 0.1
 
@@ -85,21 +82,23 @@ class UserCollaborativeRecommender:
                                      new_item_id: Optional[str] = None, 
                                      new_rating_val: Optional[int] = None,
                                      is_like: bool = False,
-                                     n_neighbors: int = 5) -> List[Dict[str, float]]:
+                                     n_neighbors: int = 10) -> List[Dict[str, Any]]:
         """
         Retrieves recommendations by injecting the latest user interaction in real-time.
+        The output is enriched with full metadata to match Content-Based output format.
         
         Args:
-            user_id: Target user ID
-            new_item_id: ID of the shoe just interacted with
-            new_rating_val: Raw rating value (1-5)
-            is_like: Boolean flag for "Like" action
-            n_neighbors: Number of similar users to analyze
+            user_id: Target user ID.
+            new_item_id: ID of the shoe just interacted with (for immediate profile update).
+            new_rating_val: Raw rating value.
+            is_like: Boolean flag for "Like" action.
+            n_neighbors: Number of similar users to analyze.
             
         Returns:
-            List of dictionaries containing shoe_id and calculated match score.
+            List[Dict[str, Any]]: A list of full shoe dictionaries sorted by match_score.
         """
-        # A. Initialize User Vector
+        
+        # --- A. Initialize User Vector ---
         if user_id in self.user_map:
             user_idx = self.user_map[user_id]
             user_vector = self.sparse_matrix[user_idx].toarray()
@@ -107,57 +106,80 @@ class UserCollaborativeRecommender:
             # Handle New/Cold User: Start with a zero-vector
             user_vector = np.zeros((1, len(self.item_ids)))
 
-        # B. Real-time Injection: Update the vector in-memory before inference
+        # --- B. Real-time Injection ---
+        # Update the vector in-memory before inference to reflect immediate interest
         if new_item_id and new_item_id in self.item_map:
             item_idx = self.item_map[new_item_id]
             score_val = self._convert_rating(new_rating_val, is_like_action=is_like)
             user_vector[0, item_idx] = score_val
 
-        # C. Inference: Find the K-Nearest Neighbors
+        # --- C. Inference (k-NN) ---
         try:
             # Query n+1 because the closest neighbor is usually the user themselves
             distances, indices = self.model.kneighbors(user_vector, n_neighbors=n_neighbors + 1)
         except ValueError:
-            return [] # Edge case: model not fitted properly
+            logger.error("CF Model not fitted properly or sparse matrix empty.")
+            return []
 
-        # D. Score Calculation: Aggregate item preferences from similar users
+        # --- D. Score Calculation ---
         rec_scores: Dict[str, float] = {}
         
         for i, neighbor_idx in enumerate(indices[0]):
-            # Skip the target user to avoid recommending already seen items
+            # Skip the target user (self)
             if user_id in self.user_map and neighbor_idx == self.user_map[user_id]:
                 continue
                 
             similarity = 1.0 - distances[0][i]
-            if similarity <= 0: 
-                continue
+            if similarity <= 0: continue
 
             neighbor_vector = self.sparse_matrix[neighbor_idx].toarray()[0]
             
-            # Identify items liked by the neighbor (positive preference only)
+            # Identify items liked by the neighbor
             liked_indices = np.where(neighbor_vector > 0)[0]
             
             for it_idx in liked_indices:
                 item_id_rec = self.item_ids[it_idx]
                 rating_neighbor = neighbor_vector[it_idx]
                 
-                # Recommendation Score = Neighbor Interest * User-Neighbor Similarity
+                # Score = Neighbor Rating * User Similarity
                 score = rating_neighbor * similarity
                 rec_scores[item_id_rec] = rec_scores.get(item_id_rec, 0.0) + score
 
-        # E. Post-Processing: Filter items already interacted with by the target user
+        # --- E. Post-Processing & Enrichment (UPDATED) ---
+        
+        # 1. Identify seen items to filter them out
         seen_indices = np.where(user_vector[0] != 0)[0]
-        seen_items: Set[str] = {self.item_ids[i] for i in seen_indices}
+        seen_items: set = {self.item_ids[i] for i in seen_indices}
         
-        final_recs = []
-        for item, score in rec_scores.items():
-            if item not in seen_items:
-                final_recs.append({
-                    'shoe_id': item, 
-                    'cf_score': round(float(score), 3)
-                })
+        # 2. Convert dictionary to DataFrame for easier handling
+        if not rec_scores:
+            return []
+
+        # Create a temporary dataframe of candidates
+        candidates_df = pd.DataFrame(list(rec_scores.items()), columns=['shoe_id', 'match_score'])
         
-        # Sort by match score (Descending)
-        final_recs.sort(key=lambda x: x['cf_score'], reverse=True)
+        # 3. Filter out seen items
+        candidates_df = candidates_df[~candidates_df['shoe_id'].isin(seen_items)]
         
-        return final_recs[:10]
+        # 4. Sort by score and take Top 10
+        candidates_df = candidates_df.sort_values('match_score', ascending=False).head(10)
+        
+        if candidates_df.empty:
+            return []
+
+        # 5. Metadata Enrichment
+        # Fetch full shoe details from the master metadata dataframe
+        top_ids = candidates_df['shoe_id'].tolist()
+        enriched_results = self.shoe_metadata[self.shoe_metadata['shoe_id'].isin(top_ids)].copy()
+        
+        # Map the calculated scores back to the enriched dataframe 
+        # (This is crucial because 'isin' does not preserve order)
+        score_map = dict(zip(candidates_df['shoe_id'], candidates_df['match_score']))
+        enriched_results['match_score'] = enriched_results['shoe_id'].map(score_map)
+        
+        # 6. Final Formatting
+        # Sort again by match_score to ensure correct order in the JSON response
+        enriched_results = enriched_results.sort_values('match_score', ascending=False)
+        
+        # Return as list of dictionaries (Standard JSON format)
+        return cast(List[Dict[str, Any]], enriched_results.to_dict(orient='records'))
