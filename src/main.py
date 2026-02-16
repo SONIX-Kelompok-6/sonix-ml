@@ -136,6 +136,11 @@ app = FastAPI(
     default_response_class=UJSONResponse # Optimization: High-speed JSON serialization
 )
 
+@app.get("/")
+async def root():
+    """Redirects to API documentation for easy exploration and testing."""
+    return RedirectResponse(url="/docs")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -206,4 +211,4 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
 if __name__ == "__main__":
     import uvicorn
     # Local dev run with workers to simulate production behavior
-    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, workers=4)
+    uvicorn.run("src.main:app", host="0.0.0.0", port=7860, workers=4)
