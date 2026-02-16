@@ -136,6 +136,11 @@ app = FastAPI(
     default_response_class=UJSONResponse # Optimization: High-speed JSON serialization
 )
 
+@app.get("/")
+async def root():
+    """Redirects to API documentation for easy exploration and testing."""
+    return RedirectResponse(url="/docs")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
