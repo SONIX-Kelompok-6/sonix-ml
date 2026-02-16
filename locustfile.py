@@ -28,7 +28,7 @@ class SonixMlTester(HttpUser):
         Used for populating the Home Feed.
         """
         user_id = 8
-        self.client.get(f"/recommend/user/{user_id}")
+        self.client.get(f"/recommend/feed/{user_id}")
 
     @task(1)
     def test_health_check(self):
