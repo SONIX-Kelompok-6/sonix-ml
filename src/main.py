@@ -270,6 +270,37 @@ async def user_interaction(payload: UserAction):
         logger.error(f"Interaction Processing Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to process interaction")
 
+# Tambahkan endpoint ini di main.py
+
+@app.get("/recommend/user/{user_id}", tags=["Collaborative Filtering"])
+async def get_user_feed(user_id: int):
+    """
+    Fetch 'You Might Also Like' recommendations based on user's PAST history.
+    Used for populating the Home Feed on page load.
+    """
+    if not cf_engine:
+        raise HTTPException(status_code=503, detail="Collaborative engine not initialized")
+    
+    try:
+        # Panggil fungsi yang SAMA, tapi tanpa parameter interaction (item_id & rating)
+        # Engine akan otomatis menggunakan data historis yang ada di memori.
+        recommendations = cf_engine.get_realtime_recommendations(
+            user_id=user_id,
+            new_item_id=None,  # Tidak ada aksi baru
+            new_rating_val=None
+        )
+        
+        # Jika user baru (belum ada history), return list kosong []
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "data": recommendations
+        }
+            
+    except Exception as e:
+        logger.error(f"Feed Retrieval Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch user feed")
+
 # --- Execution Entry Point ---
 if __name__ == "__main__":
     import uvicorn
