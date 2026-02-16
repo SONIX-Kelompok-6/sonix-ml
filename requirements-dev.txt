@@ -1,12 +1,13 @@
 -r requirements.txt
 
-# Testing
-pytest==9.0.2
-iniconfig==2.3.0
-pluggy==1.6.0
-pytest-mock==3.14.0
+# --- Testing Framework ---
+pytest==8.0.1
+pytest-asyncio==0.23.5
+pytest-mock==3.12.0
 
-# Linting & Notebook Validation
-flake8==7.1.1
-nbqa==1.9.1
-nbformat==5.10.4
+# --- Load Testing ---
+locust==2.23.1
+
+# --- Code Quality ---
+flake8==7.0.0
+black==24.2.0
