@@ -206,4 +206,4 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
 if __name__ == "__main__":
     import uvicorn
     # Local dev run with workers to simulate production behavior
-    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, workers=4)
+    uvicorn.run("src.main:app", host="0.0.0.0", port=7860, workers=4)

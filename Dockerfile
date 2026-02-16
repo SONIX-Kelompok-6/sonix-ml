@@ -29,4 +29,4 @@ ENV PYTHONPATH="${PYTHONPATH}:/app/src"
 
 # 9. Execution: Launch the application
 # --host 0.0.0.0 is mandatory for containerized environments to accept external traffic
-CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "src.main:app", "--bind", "0.0.0.0:8000"]
+CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "src.main:app", "--bind", "0.0.0.0:7860"]
