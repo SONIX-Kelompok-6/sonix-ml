@@ -55,26 +55,26 @@ The system uses two **independent** recommendation pipelines, each serving a dif
 ┌──────────────────────────────────────────────────────────────────────┐
 │                        SONIX RUSH AI Engine                          │
 │                                                                      │
-│  ┌─────────────────────────────────┐   ┌────────────────────────┐   │
+│  ┌─────────────────────────────────┐   ┌─────────────────────────┐   │
 │  │    Content-Based Pipeline       │   │  Collaborative Pipeline │   │
-│  │  POST /recommend/road           │   │  POST /interact        │   │
-│  │  POST /recommend/trail          │   │  GET  /recommend/feed  │   │
-│  │                                 │   │                        │   │
+│  │  POST /recommend/road           │   │  POST /interact         │   │
+│  │  POST /recommend/trail          │   │  GET  /recommend/feed   │   │
+│  │                                 │   │                         │   │
 │  │  1. Map user questionnaire      │   │  1. Receive interaction │   │
-│  │     → numerical vector          │   │  2. Real-time inject   │   │
-│  │  2. Encode → 8D Latent Space    │   │     into user vector   │   │
-│  │     (Deep Autoencoder)          │   │  3. KNN: find similar  │   │
-│  │  3. Route to nearest clusters   │   │     users (cosine)     │   │
-│  │     (K-Means, top ⌈K/3⌉)       │   │  4. Weighted score     │   │
-│  │  4. Masked Cosine Similarity    │   │     aggregation        │   │
-│  │  5. Return Top 10 shoes         │   │  5. Return Top 20 shoes│   │
-│  └─────────────────────────────────┘   └────────────────────────┘   │
+│  │     → numerical vector          │   │  2. Real-time inject    │   │
+│  │  2. Encode → 8D Latent Space    │   │     into user vector    │   │
+│  │     (Deep Autoencoder)          │   │  3. KNN: find similar   │   │
+│  │  3. Route to nearest clusters   │   │     users (cosine)      │   │
+│  │     (K-Means, top ⌈K/3⌉)         │   │  4. Weighted score      │   │
+│  │  4. Masked Cosine Similarity    │   │     aggregation         │   │
+│  │  5. Return Top 10 shoes         │   │  5. Return Top 20 shoes │   │
+│  └─────────────────────────────────┘   └─────────────────────────┘   │
 │                                                                      │
 │                    FastAPI + Uvicorn (4 workers)                     │
 └──────────────────────────────────────────────────────────────────────┘
               ↑                                      ↑
       SONIX RUSH Backend                    SONIX RUSH Frontend
-        (REST calls)                          (REST calls)
+        (REST calls)                           (REST calls)
 ```
 
 ### Content-Based: Training Pipeline (Offline)
@@ -114,7 +114,7 @@ Input (N-dim)
   → Dense(8)  + BatchNorm + Dropout(0.3)   ← Latent Space (saved as shoe_encoder.h5)
   → Dense(16) + BatchNorm + Dropout(0.3)   ← Decoder
   → Dense(32) + BatchNorm + Dropout(0.3)   ← Decoder
-  → Dense(N, sigmoid)                       ← Reconstruction Output
+  → Dense(N, sigmoid)                      ← Reconstruction Output
 
 Loss: MSE | Optimizer: Adam (lr=0.001) | Metric: MAE
 ```
