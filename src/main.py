@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional
 
 import pandas as pd
 import tensorflow as tf
-from fastapi import FastAPI, HTTPException, BackgroundTasks # Required for non-blocking CT
+from fastapi import FastAPI, HTTPException, BackgroundTasks 
 from fastapi.responses import RedirectResponse, UJSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 load_dotenv()
 
+# Project Internal Modules - sonix-ml project
 from .recommender import road_recommender, trail_recommender, collaborative_filtering
 from .database import fetch_and_merge_training_data
 
@@ -32,9 +33,9 @@ road_artifacts: Dict[str, Any] = {}
 trail_artifacts: Dict[str, Any] = {}
 cf_engine: Optional[collaborative_filtering.UserCollaborativeRecommender] = None
 
-# CT State: Tracks community activity to trigger global retraining
+# CT State: Triggered every 50 new interactions
 interaction_counter = 0 
-REFRESH_THRESHOLD = 50 # Retrain the global model every 50 new interactions
+REFRESH_THRESHOLD = 50 
 
 # --- Utility Functions ---
 
@@ -78,24 +79,18 @@ def load_cb_artifacts(base_path: str) -> Dict[str, Any]:
 # --- Continuous Training (CT) Background Task ---
 
 async def refresh_global_cf_engine():
-    """
-    Background worker to rebuild the Collaborative Filtering engine.
-    Synchronizes the global community 'knowledge' with the latest Supabase data.
-    """
+    """Background worker to rebuild the CF engine without blocking traffic."""
     global cf_engine
     logger.info("CT Process: Syncing global CF engine with latest Supabase data...")
     try:
-        # Offload heavy DB fetch and computation to maintain low latency (<100ms)
         interaction_df = await run_in_threadpool(fetch_and_merge_training_data)
         master_metadata = road_artifacts['df_data'] 
         
-        # Instantiate a fresh engine with the new data
         new_cf_engine = collaborative_filtering.UserCollaborativeRecommender(
             df_interactions=interaction_df, 
             shoe_metadata=master_metadata
         )
         
-        # Hot-swap the engine in RAM
         cf_engine = new_cf_engine
         logger.info("CT Success: Global community matrix has been updated.")
     except Exception as e:
@@ -112,7 +107,6 @@ async def lifespan(app: FastAPI):
         road_artifacts = load_cb_artifacts("model_artifacts/road")
         trail_artifacts = load_cb_artifacts("model_artifacts/trail")
         
-        # Initial Bootstrap of CF data
         interaction_df = fetch_and_merge_training_data()
         cf_engine = collaborative_filtering.UserCollaborativeRecommender(
             df_interactions=interaction_df, 
@@ -133,13 +127,8 @@ app = FastAPI(
     title="Sonix-ML Hybrid Recommender API",
     version="2.0.0",
     lifespan=lifespan,
-    default_response_class=UJSONResponse # Optimization: High-speed JSON serialization
+    default_response_class=UJSONResponse # Optimization for Locust performance
 )
-
-@app.get("/")
-async def root():
-    """Redirects to API documentation for easy exploration and testing."""
-    return RedirectResponse(url="/docs")
 
 app.add_middleware(
     CORSMiddleware,
@@ -151,6 +140,9 @@ app.add_middleware(
 
 # --- Pydantic Schemas ---
 
+class RecommendationRequest(BaseModel):
+    shoe_name: str
+
 class UserAction(BaseModel):
     user_id: int
     shoe_id: str
@@ -159,13 +151,45 @@ class UserAction(BaseModel):
 
 # --- API Endpoints ---
 
+@app.get("/")
+async def root():
+    """Redirects to documentation for easy testing."""
+    return RedirectResponse(url="/docs")
+
 @app.get("/health")
 async def health_check():
-    """Exposes current CT sync status for monitoring (e.g., in Locust)."""
+    """Exposes current CT sync status for monitoring."""
     return {
         "status": "healthy", 
-        "ct_sync_progress": f"{interaction_counter}/{REFRESH_THRESHOLD}"
+        "ct_sync_progress": f"{interaction_counter}/{REFRESH_THRESHOLD}",
+        "engine": "Hybrid (CB + CF)"
     }
+
+@app.post("/recommend/road", tags=["Content-Based"])
+async def recommend_road(request: RecommendationRequest):
+    """Road Shoe recommendations using Autoencoders."""
+    try:
+        recs = await run_in_threadpool(
+            road_recommender.get_recommendations,
+            user_input=request.shoe_name,
+            artifacts=road_artifacts
+        )
+        return {"status": "success", "data": recs}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@app.post("/recommend/trail", tags=["Content-Based"])
+async def recommend_trail(request: RecommendationRequest):
+    """Trail Shoe recommendations using Autoencoders."""
+    try:
+        recs = await run_in_threadpool(
+            trail_recommender.get_recommendations,
+            user_input=request.shoe_name,
+            artifacts=trail_artifacts
+        )
+        return {"status": "success", "data": recs}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 @app.post("/interact", tags=["Collaborative Filtering"])
 async def user_interaction(payload: UserAction, background_tasks: BackgroundTasks):
@@ -173,7 +197,6 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
     if not cf_engine: raise HTTPException(status_code=503, detail="CF engine not ready")
     
     try:
-        # 1. Smart Sentiment Logic: Map stars to binary likes
         is_like = True
         if payload.action_type.lower() in ["review", "edit_review"]:
             if payload.value is not None and payload.value < 3:
@@ -181,7 +204,6 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
         elif payload.action_type.lower() == "dislike":
             is_like = False
         
-        # 2. Personal Real-time Update: Immediately inject this user's action
         recommendations = await run_in_threadpool(
             cf_engine.get_realtime_recommendations,
             user_id=payload.user_id,
@@ -190,12 +212,12 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
             is_like=is_like
         )
         
-        # 3. Global Continuous Training Trigger: Track total activity
+        # Continuous Training Trigger every 50 interactions
         interaction_counter += 1
         if interaction_counter >= REFRESH_THRESHOLD:
-            logger.info(f"CT Trigger: Threshold {REFRESH_THRESHOLD} reached. Initializing background sync.")
+            logger.info(f"CT Trigger: Threshold {REFRESH_THRESHOLD} reached.")
             background_tasks.add_task(refresh_global_cf_engine)
-            interaction_counter = 0 # Reset counter post-trigger
+            interaction_counter = 0 
             
         return {
             "status": "success", 
@@ -206,9 +228,17 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
         logger.error(f"Interaction Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to process interaction")
 
-# Note: Other endpoints (road/trail/feed) remain optimized with run_in_threadpool
+@app.get("/recommend/feed/{user_id}", tags=["Hybrid Feed"])
+async def get_personalized_feed(user_id: int):
+    """Generates personalized feed based on community data."""
+    if not cf_engine: raise HTTPException(status_code=503, detail="Engine not ready")
+    try:
+        feed = await run_in_threadpool(cf_engine.get_user_recommendations, user_id=user_id)
+        return {"status": "success", "user_id": user_id, "data": feed}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    # Local dev run with workers to simulate production behavior
+    # Optimized port for Hugging Face deployment
     uvicorn.run("src.main:app", host="0.0.0.0", port=7860, workers=4)
