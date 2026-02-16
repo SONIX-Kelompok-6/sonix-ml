@@ -1,57 +1,69 @@
-# Name of the workflow as it appears in the GitHub Actions tab
 name: SONIX-ML Continuous Training
 
-# EXTERNAL TRIGGER: This workflow waits for a "Repository Dispatch" event.
-# It only runs when Supabase sends a POST request with the 'shoe_data_changed' event type.
 on:
+  # Triggered via Supabase Webhook (Database Changes)
   repository_dispatch:
     types: [shoe_data_changed]
+  
+  # Allows manual triggering from GitHub Actions tab (for testing)
+  workflow_dispatch:
 
 jobs:
-  build:
-    # Uses the latest Ubuntu environment provided by GitHub
+  train-and-deploy:
     runs-on: ubuntu-latest
+    
+    # Standard permissions (overridden by GH_PAT for the push)
+    permissions:
+      contents: write
 
     steps:
-      # 1. Pulls the latest code from your repository into the runner
-      - name: Checkout Code
+      # 1. Checkout Code with PERSONAL ACCESS TOKEN
+      - name: Checkout Repository
         uses: actions/checkout@v4
-
-      # 2. Sets up the Python environment (matching your project requirements)
-      - name: Set up Python
-        uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          token: ${{ secrets.GH_PAT }} 
+          fetch-depth: 0              # Fetch full history to ensure rebase works
+          persist-credentials: true   # Keep the token for the push step
 
-      # 3. Installs required libraries (TensorFlow, Scikit-learn, Pandas, etc.)
+      # 2. Setup Python Environment
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      # 3. Install Dependencies
       - name: Install Dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      # 4. EXECUTION: Runs the training engine for both Road and Trail categories.
-      # It requires Supabase credentials to pull the latest shoe metadata.
-      - name: Run Training Engine
+      # 4. Execute Training Engine
+      # This script connects to Supabase, retrains the model, and saves artifacts.
+      - name: Run Training Pipeline
         env:
-          # These secrets must be defined in: Settings > Secrets and variables > Actions
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          PYTHONPATH: .
         run: python -m src.training.training_engine
 
-      # 5. VERSION CONTROL: Commits the newly generated .pkl and .keras artifacts.
-      # This ensures the 'main.py' API can find the latest version in the next reload.
+      # 5. Commit, Rebase, and Push
+      # This step handles version control for the new model artifacts.
       - name: Commit and Push New Artifacts
         run: |
-          # Configure a temporary Git user for the Action
+          # Configure Git Identity (Bot)
           git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --local user.name "SONIX ML Bot"
           
-          # Stage the new versioned folders (e.g., model_artifacts/road/v_2026...)
+          # Stage the new model artifacts
           git add model_artifacts/
           
-          # Commit only if changes were made to the artifacts
-          git commit -m "auto: retrained CB models due to new shoe addition" || echo "No changes to commit"
+          # Commit changes (if any)
+          # '|| echo' prevents the workflow from failing if there are no changes
+          git commit -m "auto: model retraining complete [skip ci]" || echo "No changes to commit"
           
-          # Pull the latest changes to avoid conflicts (if any) before pushing
+          # PULL REBASE: Critical to prevent 'race conditions' if the repo changed during training
           git pull --rebase origin main
-
-          # Push the updates back to the main branch
-          git push
+          
+          # Push changes using the GH_PAT credentials from the checkout step
+          git push origin main
