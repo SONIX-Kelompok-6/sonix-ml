@@ -46,4 +46,4 @@ jobs:
           
           # 5. Mirror the clean state to Hugging Face Spaces
           # Note: --force is required here to overwrite the HF history with the clean version
-          git push --force https://reivenzz:$HF_TOKEN@huggingface.co/spaces/reivenzz/sonix-ml-api main
+          git push --force https://SONIX-RUSH:$HF_TOKEN@huggingface.co/spaces/SONIX-RUSH/sonix-ml-api main
