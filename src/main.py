@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Project Imports ---
-# NOTE: Ensure database.py is in the same folder (src)
 from .recommender import road_recommender, trail_recommender, collaborative_filtering
 from .database import fetch_and_merge_training_data, save_interaction_routed 
 
@@ -89,19 +88,6 @@ async def refresh_global_cf_engine():
     except Exception as e:
         logger.error(f"CT Failure: Background synchronization failed: {e}")
 
-def format_ids(raw_ids: List[Any], prefix: str) -> List[str]:
-    """
-    Formats raw IDs into strings with prefixes (e.g., 5 -> 'R005').
-    Reduces payload size by sending strings instead of full objects.
-    """
-    formatted = []
-    for rid in raw_ids:
-        # Convert to string, zero pad to 3 digits, prepend prefix
-        # Example: ID 12 -> "012" -> "R012"
-        s_id = str(rid).zfill(3)
-        formatted.append(f"{prefix}{s_id}")
-    return formatted
-
 # --- API Lifespan Management ---
 
 @asynccontextmanager
@@ -132,14 +118,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Sonix-ML Hybrid Recommender API",
-    version="2.1.0",
+    version="2.2.0", # Clean Version
     lifespan=lifespan,
     default_response_class=UJSONResponse 
 )
 
-# --- CORS OPTIMIZATION ---
-# max_age=86400 tells the browser to cache the Preflight response for 24 hours.
-# This eliminates the 300ms latency on every request.
+# --- CORS OPTIMIZATION (Anti-Lemot) ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -198,17 +182,14 @@ async def recommend_road(prefs: RoadInput):
     try:
         input_data = {k: v for k, v in prefs.model_dump().items() if v is not None}
         
-        # 1. Get Raw IDs from ML Engine
+        # LANGSUNG RETURN RAW DATA DARI ENGINE
         raw_ids = await run_in_threadpool(
             road_recommender.get_recommendations, 
             user_input=input_data, 
             artifacts=road_artifacts
         )
         
-        # 2. Format IDs (e.g., "R005") to reduce payload size
-        formatted_ids = format_ids(raw_ids, "R")
-        
-        return formatted_ids
+        return raw_ids
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -218,17 +199,14 @@ async def recommend_trail(prefs: TrailInput):
     try:
         input_data = {k: v for k, v in prefs.model_dump().items() if v is not None}
         
-        # 1. Get Raw IDs from ML Engine
+        # LANGSUNG RETURN RAW DATA DARI ENGINE
         raw_ids = await run_in_threadpool(
             trail_recommender.get_recommendations, 
             user_input=input_data, 
             artifacts=trail_artifacts
         )
         
-        # 2. Format IDs (e.g., "T012")
-        formatted_ids = format_ids(raw_ids, "T")
-        
-        return formatted_ids
+        return raw_ids
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -239,7 +217,6 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
     try:
         is_like = (payload.action_type.lower() == "like")
         
-        # 1. Update In-Memory Engine (Instant Feedback)
         recommendations = await run_in_threadpool(
             cf_engine.get_realtime_recommendations, 
             user_id=payload.user_id, 
@@ -248,7 +225,7 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
             is_like=is_like
         )
         
-        # 2. Persist to Database (Background Task) - FIX: No more data loss!
+        # Persist to DB (Background)
         background_tasks.add_task(
             save_interaction_routed,
             user_id=payload.user_id,
@@ -257,7 +234,6 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
             rating=payload.value
         )
         
-        # 3. Trigger Continuous Training (CT) if threshold met
         interaction_counter += 1
         if interaction_counter >= REFRESH_THRESHOLD:
             background_tasks.add_task(refresh_global_cf_engine)
@@ -271,16 +247,12 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
 async def get_feed(user_id: int):
     if not cf_engine: raise HTTPException(status_code=503, detail="Engine not ready")
     try:
-        # Collaborative filtering returns raw IDs as strings/ints
-        # We assume the frontend handles these or they match the DB directly
         feed = await run_in_threadpool(cf_engine.get_realtime_recommendations, user_id=user_id)
-        
-        # Convert all to string just in case
+        # Convert to string just in case
         return [str(item) for item in feed]
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    # Workers set to 4. Decrease to 1 or 2 if you get OOM errors on Hugging Face.
     uvicorn.run("src.main:app", host="0.0.0.0", port=7860, workers=4)
