@@ -5,18 +5,79 @@ def preprocess_trail_input(user_input: Dict[str, Any],
                            binary_cols: List[str], 
                            continuous_cols: List[str]) -> Tuple[List[float], List[int]]:
     """
-    Translates trail running questionnaire responses into a standardized numerical vector.
+    Translates trail running questionnaire responses into a standardized numerical 
+    vector compatible with the Deep Autoencoder.
     
-    This function handles the heuristic mapping for trail-specific features (terrain, 
-    lugs, protection) and identifies the active feature set for masked similarity.
-
+    This function handles trail-specific heuristic mapping for features like terrain 
+    difficulty, traction (lug depth), protection (shock absorption, rock plate), 
+    and weather resistance. It also implements feature masking to identify which 
+    features should be used in similarity calculation based on user input.
+    
     Args:
-        user_input: Raw questionnaire data from the frontend.
-        binary_cols: List of binary feature names (e.g., waterproof) from config.py.
-        continuous_cols: List of continuous feature names (e.g., lug_dept_mm) from config.py.
-
+        user_input (Dict[str, Any]): Raw questionnaire data from the frontend. 
+            Expected keys include:
+            - 'pace': str ('Easy', 'Steady', 'Fast')
+            - 'arch_type': str ('Flat', 'Normal', 'High')
+            - 'strike_pattern': str ('Heel', 'Mid', 'Forefoot')
+            - 'foot_width': str ('Narrow', 'Regular', 'Wide')
+            - 'season': str ('Summer', 'Spring & Fall', 'Winter')
+            - 'orthotic_usage': str ('Yes', 'No')
+            - 'terrain': str ('Light', 'Mixed', 'Rocky', 'Muddy')
+            - 'rock_sensitive': str ('Yes', 'No')
+            - 'water_resistance': str ('Waterproof', 'Water Repellent')
+        binary_cols (List[str]): List of binary feature names from config.py 
+            (e.g., ['lightweight', 'waterproof', 'water_repellent', ...]). 
+            These are encoded as 0.0 or 1.0.
+        continuous_cols (List[str]): List of continuous feature names from 
+            config.py (e.g., ['weight_lab_oz', 'lug_dept_mm', ...]). 
+            These are normalized to [0, 1] range.
+    
     Returns:
-        Tuple: (The full numerical vector, List of indices for masked similarity matching).
+        Tuple[List[float], List[int]]: A tuple containing:
+            - full_vector_raw (List[float]): The complete numerical vector 
+              representing user preferences. Length matches total feature count 
+              (typically 36 for trail). Values are in [0, 1] range.
+            - valid_indices (List[int]): Indices of features the user explicitly 
+              provided. Used for masked cosine similarity to prevent noise from 
+              default values. If empty (no user input), returns all indices.
+    
+    Feature Mapping Strategy:
+        - Terrain distribution: Terrain difficulty is distributed across three 
+          features (light/moderate/technical) to capture intensity spectrum
+        - Traction scaling: Lug depth correlates with terrain muddiness and 
+          technical difficulty
+        - Protection features: Shock absorption and rock plates prioritized for 
+          rocky/technical terrain
+        - Weather resistance: Waterproof/water-repellent features activated by 
+          water_resistance preference and muddy terrain
+        - Static features: Quality attributes (durability, energy return) default 
+          to 1.0 and are always included in similarity
+    
+    Example:
+        >>> user_input = {
+        ...     'pace': 'Steady',
+        ...     'terrain': 'Rocky',
+        ...     'rock_sensitive': 'Yes',
+        ...     'water_resistance': 'Water Repellent'
+        ... }
+        >>> binary_cols = ['lightweight', 'waterproof', ...]
+        >>> continuous_cols = ['lug_dept_mm', 'traction_scaled', ...]
+        >>> vector, valid_idx = preprocess_trail_input(user_input, binary_cols, continuous_cols)
+        >>> len(vector)
+        36
+        >>> len(valid_idx)
+        18  # Only features derived from pace/terrain/rock_sensitive/water_resistance
+        >>> vector[4]  # shock_absorption feature
+        1.0  # Because rock_sensitive='Yes' and terrain='Rocky'
+    
+    Notes:
+        - All features default to neutral values (0.0 for binary, 0.5 for continuous) 
+          if not derivable from user input
+        - Feature masking (valid_indices) is critical for accuracy when user 
+          provides sparse input
+        - The mapping logic is empirically tuned based on trail running biomechanics 
+          and off-road shoe design principles
+        - Trail shoes emphasize protection and traction over speed optimization
     """
     # Initialize feature space to neutral defaults
     feats = {col: 0.0 for col in binary_cols + continuous_cols}
@@ -162,9 +223,71 @@ def preprocess_trail_input(user_input: Dict[str, Any],
     
     return full_vector_raw, valid_indices or list(range(len(all_cols)))
 
+
 def get_recommendations(user_input: Dict[str, Any], artifacts: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Wrapper function to execute the full trail recommendation pipeline.
+    Executes the full trail shoe recommendation pipeline from raw user input to 
+    ranked recommendations.
+    
+    This is the main entry point for trail shoe recommendations, orchestrating 
+    the preprocessing and recommendation pipeline with trail-specific features.
+    
+    Args:
+        user_input (Dict[str, Any]): Raw questionnaire responses from the user. 
+            See preprocess_trail_input() for expected keys. Trail-specific keys 
+            include 'terrain', 'rock_sensitive', and 'water_resistance'.
+        artifacts (Dict[str, Any]): Pre-loaded model artifacts containing:
+            - 'binary_cols' (List[str]): Binary feature names for trail shoes
+            - 'continuous_cols' (List[str]): Continuous feature names for trail shoes
+            - 'df_data' (pd.DataFrame): Trail shoe metadata with cluster labels
+            - 'encoder_model' (tf.keras.Model): Trained Autoencoder for trail
+            - 'kmeans_model' (sklearn.cluster.KMeans): Trained K-Means for trail
+            - 'X_combined_data' (np.ndarray): Scaled feature matrix for trail shoes
+    
+    Returns:
+        List[Dict[str, Any]]: Top 10 recommended trail shoes with metadata:
+            [
+                {
+                    'shoe_id': 'T012',
+                    'name': 'Hoka Speedgoat 5',
+                    'brand': 'Hoka',
+                    'cluster': 4,
+                    'match_score': 0.94,
+                    'lug_dept_mm': 5.0,
+                    'waterproof': True,
+                    ... (other shoe attributes)
+                },
+                ...
+            ]
+    
+    Workflow:
+        1. Preprocess user input into numerical vector (trail-specific features)
+        2. Identify valid feature indices for masking
+        3. Pass to recommendation pipeline (encoding → clustering → similarity)
+        4. Return ranked results
+    
+    Example:
+        >>> artifacts = load_cb_artifacts("model_artifacts/trail")
+        >>> user_input = {
+        ...     'pace': 'Steady',
+        ...     'terrain': 'Rocky',
+        ...     'rock_sensitive': 'Yes',
+        ...     'water_resistance': 'Water Repellent',
+        ...     'arch_type': 'Normal'
+        ... }
+        >>> recommendations = get_recommendations(user_input, artifacts)
+        >>> recommendations[0]['name']
+        'Hoka Speedgoat 5'
+        >>> recommendations[0]['match_score']
+        0.94
+        >>> recommendations[0]['lug_dept_mm']
+        5.0
+    
+    Notes:
+        - Trail recommendations prioritize protection, traction, and durability 
+          over pure speed optimization
+        - The model accounts for terrain difficulty, weather conditions, and 
+          user sensitivity to rock/root impacts
     """
     full_vector, valid_idx = preprocess_trail_input(
         user_input, 

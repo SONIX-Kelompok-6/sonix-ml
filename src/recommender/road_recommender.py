@@ -5,19 +5,75 @@ def preprocess_road_input(user_input: Dict[str, Any],
                           binary_cols: List[str], 
                           continuous_cols: List[str]) -> Tuple[List[float], List[int]]:
     """
-    Translates road running questionnaire responses into a standardized numerical vector.
+    Translates road running questionnaire responses into a standardized numerical 
+    vector compatible with the Deep Autoencoder.
     
-    This function applies heuristic mapping to convert qualitative preferences into 
-    quantitative features compatible with the Deep Autoencoder's input layer. 
-    It also identifies 'valid' features based on user participation for the masking process.
-
+    This function applies domain-specific heuristic mapping to convert qualitative 
+    user preferences (e.g., "Fast" pace, "Neutral" arch) into quantitative features. 
+    It also implements feature masking to identify which features should be used 
+    in similarity calculation based on what the user actually provided.
+    
     Args:
-        user_input: Raw questionnaire data from the frontend.
-        binary_cols: List of binary feature names defined in config.py.
-        continuous_cols: List of continuous feature names defined in config.py.
-
+        user_input (Dict[str, Any]): Raw questionnaire data from the frontend. 
+            Expected keys include:
+            - 'pace': str ('Easy', 'Steady', 'Fast')
+            - 'arch_type': str ('Flat', 'Normal', 'High')
+            - 'strike_pattern': str ('Heel', 'Mid', 'Forefoot')
+            - 'foot_width': str ('Narrow', 'Regular', 'Wide')
+            - 'season': str ('Summer', 'Spring & Fall', 'Winter')
+            - 'orthotic_usage': str ('Yes', 'No')
+            - 'running_purpose': str ('Daily', 'Tempo', 'Race')
+            - 'cushion_preferences': str ('Soft', 'Balanced', 'Firm')
+            - 'stability_need': str ('Neutral', 'Guided')
+        binary_cols (List[str]): List of binary feature names from config.py 
+            (e.g., ['lightweight', 'rocker', 'removable_insole', ...]). 
+            These are encoded as 0.0 or 1.0.
+        continuous_cols (List[str]): List of continuous feature names from 
+            config.py (e.g., ['weight_lab_oz', 'drop_lab_mm', ...]). 
+            These are normalized to [0, 1] range.
+    
     Returns:
-        Tuple: (The full numerical vector, List of indices representing active user preferences).
+        Tuple[List[float], List[int]]: A tuple containing:
+            - full_vector_raw (List[float]): The complete numerical vector 
+              representing user preferences. Length matches total feature count 
+              (typically 31 for road). Values are in [0, 1] range.
+            - valid_indices (List[int]): Indices of features the user explicitly 
+              provided. Used for masked cosine similarity to prevent noise from 
+              default values. If empty (no user input), returns all indices.
+    
+    Feature Mapping Strategy:
+        - Multi-source priority: Some features (e.g., strike pattern) consider 
+          multiple inputs with priority ordering
+        - Derived features: Some features are computed from others 
+          (e.g., weight_lab_oz = 1.0 - lightweight)
+        - Static features: Quality attributes (durability, breathability) default 
+          to 1.0 (high quality) and are always included in similarity
+        - Seasonal distribution: Season preference is distributed across three 
+          binary features (summer/winter/all-season)
+    
+    Example:
+        >>> user_input = {
+        ...     'pace': 'Fast',
+        ...     'arch_type': 'Normal',
+        ...     'running_purpose': 'Race'
+        ... }
+        >>> binary_cols = ['lightweight', 'rocker', ...]
+        >>> continuous_cols = ['weight_lab_oz', 'drop_lab_mm', ...]
+        >>> vector, valid_idx = preprocess_road_input(user_input, binary_cols, continuous_cols)
+        >>> len(vector)
+        31
+        >>> len(valid_idx)
+        15  # Only features derived from pace/arch_type/running_purpose
+        >>> vector[0]  # lightweight feature
+        1.0  # Because pace='Fast'
+    
+    Notes:
+        - All features default to neutral values (0.0 for binary, 0.5 for continuous) 
+          if not derivable from user input
+        - Feature masking (valid_indices) is critical for accuracy when user 
+          provides sparse input
+        - The mapping logic is empirically tuned based on running biomechanics 
+          and shoe design principles
     """
     # Initialize all potential features to neutral/zero
     feats = {col: 0.0 for col in binary_cols + continuous_cols}
@@ -155,9 +211,59 @@ def preprocess_road_input(user_input: Dict[str, Any],
     
     return full_vector_raw, valid_indices or list(range(len(all_cols)))
 
+
 def get_recommendations(user_input: Dict[str, Any], artifacts: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Wrapper function to execute the full road recommendation pipeline.
+    Executes the full road shoe recommendation pipeline from raw user input to 
+    ranked recommendations.
+    
+    This is the main entry point for road shoe recommendations, orchestrating 
+    the preprocessing and recommendation pipeline.
+    
+    Args:
+        user_input (Dict[str, Any]): Raw questionnaire responses from the user. 
+            See preprocess_road_input() for expected keys.
+        artifacts (Dict[str, Any]): Pre-loaded model artifacts containing:
+            - 'binary_cols' (List[str]): Binary feature names
+            - 'continuous_cols' (List[str]): Continuous feature names
+            - 'df_data' (pd.DataFrame): Shoe metadata with cluster labels
+            - 'encoder_model' (tf.keras.Model): Trained Autoencoder
+            - 'kmeans_model' (sklearn.cluster.KMeans): Trained K-Means
+            - 'X_combined_data' (np.ndarray): Scaled feature matrix
+    
+    Returns:
+        List[Dict[str, Any]]: Top 10 recommended road shoes with metadata:
+            [
+                {
+                    'shoe_id': 'R045',
+                    'name': 'Nike Vaporfly 3',
+                    'brand': 'Nike',
+                    'cluster': 2,
+                    'match_score': 0.97,
+                    ... (other shoe attributes)
+                },
+                ...
+            ]
+    
+    Workflow:
+        1. Preprocess user input into numerical vector
+        2. Identify valid feature indices for masking
+        3. Pass to recommendation pipeline (encoding → clustering → similarity)
+        4. Return ranked results
+    
+    Example:
+        >>> artifacts = load_cb_artifacts("model_artifacts/road")
+        >>> user_input = {
+        ...     'pace': 'Fast',
+        ...     'arch_type': 'Normal',
+        ...     'running_purpose': 'Race',
+        ...     'strike_pattern': 'Forefoot'
+        ... }
+        >>> recommendations = get_recommendations(user_input, artifacts)
+        >>> recommendations[0]['name']
+        'Nike Vaporfly 3'
+        >>> recommendations[0]['match_score']
+        0.97
     """
     full_vector, valid_idx = preprocess_road_input(
         user_input, 
