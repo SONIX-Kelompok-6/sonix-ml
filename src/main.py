@@ -1,38 +1,3 @@
-"""
-Sonix-ML Inference API Gateway
-------------------------------
-The central entry point for the Sonix Recommendation Engine. This FastAPI application 
-orchestrates a Hybrid Recommendation System combining Content-Based Filtering (Cold Start) 
-and Collaborative Filtering (User-User/Item-Item).
-
-Architecture Overview:
-    1. Stateful Service: Loads heavy ML artifacts (Autoencoders, Scalers, Matrices) 
-       into Global Memory on startup to ensure sub-millisecond inference latency.
-    2. Asynchronous Concurrency: Uses 'run_in_threadpool' to offload CPU-bound 
-       matrix operations, keeping the main Event Loop non-blocking.
-    3. Continuous Learning (CT): Implements a counter-based trigger system to 
-       refresh the Collaborative Filtering matrix in the background without downtime.
-
-Global State Management:
-    - road_artifacts (Dict): Holds TensorFlow Encoders & K-Means models for Road shoes.
-    - trail_artifacts (Dict): Holds TensorFlow Encoders & K-Means models for Trail shoes.
-    - cf_engine (Class): Instance of UserCollaborativeRecommender holding the 
-      User-Item Interaction Matrix.
-
-Lifecycle Events:
-    - Startup:
-        a. Connects to Supabase.
-        b. Fetches latest Interaction Data.
-        c. Loads the latest versioned Model Artifacts from disk.
-        d. Initializes the Collaborative Filtering Engine.
-    - Shutdown:
-        a. Clears GPU/RAM memory.
-
-Environment Dependencies:
-    - SUPABASE_URL & SUPABASE_KEY: For database persistence.
-    - MODEL_ARTIFACTS_DIR: Directory structure for versioned models.
-"""
-
 import os
 import glob
 import pickle
@@ -52,7 +17,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Project Imports ---
-# Ensure these match your actual folder structure
 from .recommender import road_recommender, trail_recommender, collaborative_filtering
 from .database import fetch_and_merge_training_data, save_interaction_routed 
 
@@ -60,7 +24,6 @@ from .database import fetch_and_merge_training_data, save_interaction_routed
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(name)s - %(message)s')
 logger = logging.getLogger("sonix_ml_api")
 
-# Global State Containers
 road_artifacts: Dict[str, Any] = {}
 trail_artifacts: Dict[str, Any] = {}
 cf_engine: Optional[collaborative_filtering.UserCollaborativeRecommender] = None
@@ -72,10 +35,7 @@ REFRESH_THRESHOLD = 50
 # --- Core Utility Functions ---
 
 def get_latest_model_path(base_path: str, prefix: str = 'v_') -> str:
-    """
-    Scans the artifact directory and selects the most recently created version folder.
-    Follows the naming convention: {base_path}/v_{YYYYMMDD_HHMMSS}/
-    """
+    """Retrieves the most recent versioned model directory."""
     search_pattern = os.path.join(base_path, f'{prefix}*')
     folders = glob.glob(search_pattern)
     if not folders: 
@@ -85,22 +45,7 @@ def get_latest_model_path(base_path: str, prefix: str = 'v_') -> str:
     return latest_version
 
 def load_cb_artifacts(base_path: str) -> Dict[str, Any]:
-    """
-    Deserializes machine learning artifacts from disk into memory.
-    
-    Operations:
-    1. Identifies latest version via timestamp.
-    2. Loads Pandas Metadata (Product Catalog).
-    3. Loads Feature Scalers (MinMax) & Feature Arrays (Numpy).
-    4. Loads TensorFlow Keras Model (Autoencoder).
-    5. Loads Scikit-Learn Model (K-Means).
-
-    Args:
-        base_path (str): Root directory for specific category (e.g., 'model_artifacts/road').
-
-    Returns:
-        Dict: A packaged dictionary containing all components needed for inference.
-    """
+    """Loads all serialized artifacts into memory for inference."""
     try:
         v_path = get_latest_model_path(base_path)
         logger.info(f"Loading from: {v_path}")
@@ -128,14 +73,7 @@ def load_cb_artifacts(base_path: str) -> Dict[str, Any]:
         raise RuntimeError(f"Failed to initialize ML engine: {str(e)}")
 
 async def refresh_global_cf_engine():
-    """
-    Background Task: Performs a 'Hot Reload' of the Collaborative Filtering Engine.
-    
-    Triggered when 'interaction_counter' exceeds 'REFRESH_THRESHOLD'.
-    Fetching fresh data and rebuilding the matrix happens in isolation; 
-    the global pointer 'cf_engine' is only swapped once the new build is ready, 
-    ensuring zero downtime for incoming requests.
-    """
+    """Background task to rebuild the CF engine without downtime."""
     global cf_engine
     logger.info("CT Process: Syncing global CF engine with latest Supabase data...")
     try:
@@ -154,10 +92,6 @@ async def refresh_global_cf_engine():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Manages the startup and shutdown sequence of the ML Application.
-    Ensures all heavy models are loaded into RAM before the API starts accepting requests.
-    """
     global road_artifacts, trail_artifacts, cf_engine
     logger.info("--- Starting Sonix-ML Hybrid Engine ---")
     try:
@@ -189,7 +123,7 @@ app = FastAPI(
     default_response_class=UJSONResponse 
 )
 
-# --- CORS OPTIMIZATION (Anti-Latency) ---
+# --- CORS OPTIMIZATION (Anti-Lemot) ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -244,20 +178,11 @@ async def health_check():
 
 @app.post("/recommend/road", tags=["Content-Based"], response_model=List[str])
 async def recommend_road(prefs: RoadInput):
-    """
-    Generates Content-Based recommendations for Road Running Shoes.
-    
-    Method:
-    1. Vectorizes user preferences (One-Hot Encoding + Scaling).
-    2. Projects vector into Learned Latent Space (via Encoder).
-    3. Identifies the nearest cluster centroid (K-Means).
-    4. Computes Cosine Similarity within the cluster to find top matches.
-    """
     if not road_artifacts: raise HTTPException(status_code=503, detail="Engine not ready")
     try:
         input_data = {k: v for k, v in prefs.model_dump().items() if v is not None}
         
-        # Offload heavy calculation to threadpool
+        # LANGSUNG RETURN RAW DATA DARI ENGINE
         raw_ids = await run_in_threadpool(
             road_recommender.get_recommendations, 
             user_input=input_data, 
@@ -270,15 +195,11 @@ async def recommend_road(prefs: RoadInput):
 
 @app.post("/recommend/trail", tags=["Content-Based"], response_model=List[str])
 async def recommend_trail(prefs: TrailInput):
-    """
-    Generates Content-Based recommendations for Trail Running Shoes.
-    Similar to Road, but utilizes trail-specific feature sets (terrain, protection).
-    """
     if not trail_artifacts: raise HTTPException(status_code=503, detail="Engine not ready")
     try:
         input_data = {k: v for k, v in prefs.model_dump().items() if v is not None}
         
-        # Offload heavy calculation to threadpool
+        # LANGSUNG RETURN RAW DATA DARI ENGINE
         raw_ids = await run_in_threadpool(
             trail_recommender.get_recommendations, 
             user_input=input_data, 
@@ -291,20 +212,11 @@ async def recommend_trail(prefs: TrailInput):
 
 @app.post("/interact", tags=["Collaborative Filtering"])
 async def user_interaction(payload: UserAction, background_tasks: BackgroundTasks):
-    """
-    Handles Real-time User Interactions (Like/Rate).
-    
-    Dual Responsibility:
-    1. Immediate Feedback: Returns updated recommendations based on the new action.
-    2. Data Persistence: Queues a background task to save to Supabase.
-    3. Continuous Training: Increments counter; triggers matrix rebuild if threshold met.
-    """
     global interaction_counter
     if not cf_engine: raise HTTPException(status_code=503, detail="Engine not ready")
     try:
         is_like = (payload.action_type.lower() == "like")
         
-        # Get Real-time Feedback (Collaborative)
         recommendations = await run_in_threadpool(
             cf_engine.get_realtime_recommendations, 
             user_id=payload.user_id, 
@@ -313,8 +225,7 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
             is_like=is_like
         )
         
-        # Persist to DB (Background Task)
-        # This prevents the API from waiting on the Database Write
+        # Persist to DB (Background)
         background_tasks.add_task(
             save_interaction_routed,
             user_id=payload.user_id,
@@ -323,7 +234,6 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
             rating=payload.value
         )
         
-        # Check for Continuous Training Trigger
         interaction_counter += 1
         if interaction_counter >= REFRESH_THRESHOLD:
             background_tasks.add_task(refresh_global_cf_engine)
@@ -335,11 +245,6 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
 
 @app.get("/recommend/feed/{user_id}", tags=["Hybrid Feed"], response_model=List[str])
 async def get_feed(user_id: int):
-    """
-    Retrieves the personalized feed for a user based on their historical interactions.
-    If the user is new (Cold Start), this will fallback to popular items 
-    (logic handled inside cf_engine).
-    """
     if not cf_engine: raise HTTPException(status_code=503, detail="Engine not ready")
     try:
         feed = await run_in_threadpool(cf_engine.get_realtime_recommendations, user_id=user_id)
