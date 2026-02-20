@@ -1,9 +1,11 @@
 """
-Sonix-ML Feature Configuration
-------------------------------
-This module defines the global feature sets for Road and Trail shoe categories.
-Maintain strict naming consistency here to ensure seamless integration between 
-the Supabase database schema and the Machine Learning models.
+Sonix-ML Feature Configuration Module
+-------------------------------------
+Defines the global feature sets for Road and Trail shoe categories.
+
+This module acts as the single source of truth for feature column names,
+ensuring strict naming consistency between the Supabase database schema, 
+the Machine Learning models (Autoencoder & K-Means), and the inference API.
 """
 
 from typing import List
