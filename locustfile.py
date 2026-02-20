@@ -3,7 +3,7 @@ Sonix-ML Performance Testing Suite
 ----------------------------------
 This module defines the load testing scenarios for the Sonix-ML API 
 hosted on Hugging Face. It simulates concurrent user behavior to 
-measure system latency (P50, P95) across recommendation and 
+measure system latency (P50, P90, P95) across recommendation and 
 interaction endpoints.
 """
 
