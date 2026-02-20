@@ -1,16 +1,9 @@
 """
 Sonix-ML Training Engine Module
 -------------------------------
-Orchestrates the training lifecycle for both Road and Trail recommendation models.
-Refactored into a modular pipeline class to ensure Single Responsibility, 
-testability, and minimized cyclomatic complexity.
-
-Workflow:
-1. Data Ingestion (Supabase)
-2. Normalization (MinMaxScaler)
-3. Dimensionality Reduction (Deep Autoencoder)
-4. Cluster Generation (K-Means)
-5. Artifact Serialization (Models, Scalers, and Metadata)
+Orchestrates the training lifecycle for recommendation models.
+Refactored into a modular pipeline class to ensure Single Responsibility 
+and minimized cyclomatic complexity.
 """
 
 import os
@@ -27,37 +20,17 @@ from src.training.architecture import build_autoencoder
 from src.database import fetch_shoes_by_type
 from src.config import ROAD_FEATURES, TRAIL_FEATURES
 
-# Configure logging for training visibility
 logger = logging.getLogger(__name__)
 
 class TrainingPipeline:
-    """
-    Modular training pipeline for Sonix-ML recommendation models.
-    Isolates data ingestion, model training, and artifact serialization.
-    """
+    """Modular training pipeline isolating ingestion, training, and serialization."""
 
     def __init__(self, shoe_type: str):
-        """
-        Initializes the training pipeline configuration based on shoe category.
-        
-        Args:
-            shoe_type (str): Category of the shoe to train ('road' or 'trail').
-        """
         self.shoe_type = shoe_type
         self.target_features = ROAD_FEATURES if shoe_type == 'road' else TRAIL_FEATURES
         self.n_clusters = 5
 
     def _ingest_and_scale(self) -> Tuple[np.ndarray, MinMaxScaler, pd.DataFrame, List[str]]:
-        """
-        Fetches raw data from the database, filters target features, and applies min-max scaling.
-        
-        Returns:
-            Tuple: 
-                - X_scaled (np.ndarray): Scaled numerical feature matrix.
-                - scaler (MinMaxScaler): Fit scaler instance.
-                - df (pd.DataFrame): Raw dataframe for metadata construction.
-                - numeric_cols (List[str]): List of active feature columns.
-        """
         df = fetch_shoes_by_type(self.shoe_type)
         if df.empty:
             raise ValueError(f"No source data retrieved for {self.shoe_type}")
@@ -71,17 +44,6 @@ class TrainingPipeline:
         return X_scaled, scaler, df, numeric_cols
 
     def _train_models(self, X_scaled: np.ndarray) -> Tuple[Any, KMeans]:
-        """
-        Constructs and trains the Deep Autoencoder and K-Means clustering models.
-        
-        Args:
-            X_scaled (np.ndarray): Scaled numerical feature matrix.
-            
-        Returns:
-            Tuple:
-                - encoder (tf.keras.Model): Trained standalone encoder model.
-                - kmeans (KMeans): Fit K-Means clustering model.
-        """
         autoencoder, encoder = build_autoencoder(input_dim=X_scaled.shape[1])
         
         logger.info("Training Deep Autoencoder (Epochs: 300, Batch: 64)...")
@@ -97,33 +59,16 @@ class TrainingPipeline:
 
     def _save_artifacts(self, encoder: Any, kmeans: KMeans, scaler: MinMaxScaler, 
                         X_scaled: np.ndarray, df: pd.DataFrame, numeric_cols: List[str]) -> str:
-        """
-        Serializes trained models, scalers, and metadata into versioned directories.
-        
-        Args:
-            encoder (tf.keras.Model): Trained standalone encoder model.
-            kmeans (KMeans): Fit K-Means clustering model.
-            scaler (MinMaxScaler): Fit scaler instance.
-            X_scaled (np.ndarray): Scaled numerical feature matrix.
-            df (pd.DataFrame): Base dataframe for metadata extraction.
-            numeric_cols (List[str]): Active feature columns.
-            
-        Returns:
-            str: Path to the created artifact directory.
-        """
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         save_path = f"model_artifacts/{self.shoe_type}/v_{ts}"
         os.makedirs(save_path, exist_ok=True)
 
-        # Maintained .h5 extension to ensure compatibility with existing inference API
         encoder.save(os.path.join(save_path, "shoe_encoder.h5"))
         
         with open(os.path.join(save_path, "kmeans_model.pkl"), "wb") as f:
             pickle.dump(kmeans, f)
-
         with open(os.path.join(save_path, "scaler.pkl"), "wb") as f:
             pickle.dump(scaler, f)
-
         with open(os.path.join(save_path, "shoe_features.pkl"), "wb") as f:
             pickle.dump(X_scaled, f)
 
@@ -131,15 +76,12 @@ class TrainingPipeline:
         df_meta['cluster'] = kmeans.labels_
         df_meta.attrs['binary_cols'] = [c for c in numeric_cols if df[c].nunique() <= 2]
         df_meta.attrs['continuous_cols'] = [c for c in numeric_cols if df[c].nunique() > 2]
-        
         df_meta.to_pickle(os.path.join(save_path, "shoe_metadata.pkl"))
 
         return save_path
 
     def run(self) -> None:
-        """
-        Executes the full, orchestrated training sequence.
-        """
+        """Executes the full orchestrated training sequence."""
         logger.info(f">>> Initializing training sequence for: {self.shoe_type.upper()}")
         try:
             X_scaled, scaler, df, numeric_cols = self._ingest_and_scale()
@@ -150,18 +92,5 @@ class TrainingPipeline:
             logger.error(f"Training failed for {self.shoe_type}: {str(e)}")
 
 def run_training(shoe_type: str) -> None:
-    """
-    Legacy wrapper for module-level execution to maintain backward compatibility.
-    
-    Args:
-        shoe_type (str): Category of the shoe to train.
-    """
     pipeline = TrainingPipeline(shoe_type)
     pipeline.run()
-
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv()
-    
-    run_training('road')
-    run_training('trail')
