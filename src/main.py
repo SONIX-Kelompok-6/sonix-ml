@@ -149,7 +149,6 @@ app = FastAPI(
     default_response_class=UJSONResponse 
 )
 
-# FIXED: allow_credentials must be False if allow_origins=["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -246,20 +245,11 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
             is_like=is_like
         )
         
-        background_tasks.add_task(
-            save_interaction_routed,
-            user_id=payload.user_id,
-            shoe_id=payload.shoe_id,
-            action_type=payload.action_type,
-            rating=payload.value
-        )
-        
         interaction_counter += 1
         if interaction_counter >= REFRESH_THRESHOLD:
             background_tasks.add_task(refresh_global_cf_engine)
             interaction_counter = 0 
-            
-        # FIXED: Returning strictly a list of IDs instead of a dictionary
+
         return recommendations
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -279,3 +269,21 @@ if __name__ == "__main__":
     import uvicorn
     # Using workers=1 is standard for lightweight Hugging Face Space deployments
     uvicorn.run("src.main:app", host="0.0.0.0", port=7860, workers=1)
+
+# --- Check real latency ---
+import time
+from fastapi import Request
+
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    start_time = time.time()
+    
+    response = await call_next(request)
+    
+    process_time = time.time() - start_time
+    
+    response.headers["X-Process-Time"] = str(process_time)
+    
+    print(f"[{request.url.path}] Processed in {process_time * 1000:.2f} ms")
+    
+    return response
