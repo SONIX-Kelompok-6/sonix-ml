@@ -5,13 +5,15 @@ Orchestrates the Content-Based (Deep Autoencoder + K-Means) and
 Collaborative Filtering (UBCF NearestNeighbors) recommendation engines.
 
 Built with FastAPI for asynchronous, high-throughput inference operations.
-Refactored for optimal cyclomatic complexity and robust exception handling.
+Optimized with LRU Caching for sub-millisecond response times on frequent queries.
 """
 
 import os
 import glob
 import pickle
 import logging
+import json
+from functools import lru_cache
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional, List
 
@@ -99,6 +101,19 @@ async def refresh_global_cf_engine() -> None:
     except Exception as e:
         logger.error(f"CT Failure: Background synchronization failed: {e}")
 
+# --- Inference Cache Engines ---
+# Isolating the heavy computation to maximize cache hits
+
+@lru_cache(maxsize=1024)
+def cached_road_inference(payload_str: str) -> List[str]:
+    user_input = json.loads(payload_str)
+    return road_recommender.get_recommendations(user_input=user_input, artifacts=road_artifacts)
+
+@lru_cache(maxsize=1024)
+def cached_trail_inference(payload_str: str) -> List[str]:
+    user_input = json.loads(payload_str)
+    return trail_recommender.get_recommendations(user_input=user_input, artifacts=trail_artifacts)
+
 # --- API Lifespan Management ---
 
 @asynccontextmanager
@@ -109,7 +124,6 @@ async def lifespan(app: FastAPI):
         road_artifacts = load_cb_artifacts("model_artifacts/road")
         trail_artifacts = load_cb_artifacts("model_artifacts/trail")
         
-        # Load interaction data from DB to build the matrix
         interaction_df = fetch_and_merge_training_data()
         
         cf_engine = collaborative_filtering.UserCollaborativeRecommender(
@@ -135,10 +149,11 @@ app = FastAPI(
     default_response_class=UJSONResponse 
 )
 
+# FIXED: allow_credentials must be False if allow_origins=["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     max_age=86400, 
@@ -193,12 +208,11 @@ async def recommend_road(prefs: RoadInput):
         raise HTTPException(status_code=503, detail="Road engine not ready")
         
     try:
-        input_data = {k: v for k, v in prefs.model_dump().items() if v is not None}
-        return await run_in_threadpool(
-            road_recommender.get_recommendations, 
-            user_input=input_data, 
-            artifacts=road_artifacts
-        )
+        # Exclude None values and serialize to a sorted JSON string for deterministic caching
+        input_data = prefs.model_dump(exclude_none=True)
+        payload_str = json.dumps(input_data, sort_keys=True)
+        
+        return await run_in_threadpool(cached_road_inference, payload_str)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -208,16 +222,14 @@ async def recommend_trail(prefs: TrailInput):
         raise HTTPException(status_code=503, detail="Trail engine not ready")
         
     try:
-        input_data = {k: v for k, v in prefs.model_dump().items() if v is not None}
-        return await run_in_threadpool(
-            trail_recommender.get_recommendations, 
-            user_input=input_data, 
-            artifacts=trail_artifacts
-        )
+        input_data = prefs.model_dump(exclude_none=True)
+        payload_str = json.dumps(input_data, sort_keys=True)
+        
+        return await run_in_threadpool(cached_trail_inference, payload_str)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/interact", tags=["Collaborative Filtering"])
+@app.post("/interact", tags=["Collaborative Filtering"], response_model=List[str])
 async def user_interaction(payload: UserAction, background_tasks: BackgroundTasks):
     global interaction_counter
     if not cf_engine: 
@@ -247,7 +259,8 @@ async def user_interaction(payload: UserAction, background_tasks: BackgroundTask
             background_tasks.add_task(refresh_global_cf_engine)
             interaction_counter = 0 
             
-        return {"status": "success", "data": recommendations}
+        # FIXED: Returning strictly a list of IDs instead of a dictionary
+        return recommendations
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -264,4 +277,5 @@ async def get_feed(user_id: int):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("src.main:app", host="0.0.0.0", port=7860, workers=4)
+    # Using workers=1 is standard for lightweight Hugging Face Space deployments
+    uvicorn.run("src.main:app", host="0.0.0.0", port=7860, workers=1)
