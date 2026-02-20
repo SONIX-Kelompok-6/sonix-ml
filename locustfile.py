@@ -74,15 +74,10 @@ class SonixMlTester(HttpUser):
         write-operation latency and database logging performance.
         """
         payload = {
-            "pace": "Steady",
-            "arch_type": "Flat",
-            "strike_pattern": "Heel",
-            "foot_width": "Wide",
-            "season": "Spring & Fall",
-            "orthotic_usage": "Yes",
-            "terrain": "Mixed",
-            "rock_sensitive": "Yes",
-            "water_resistance": "Waterproof"
+            "user_id": 2,
+            "shoe_id": "R050",
+            "action_type": "like",
+            "value": 1
         }
         self.client.post("/interact", json=payload, name="POST /interact")
 
