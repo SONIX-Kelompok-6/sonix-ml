@@ -257,7 +257,9 @@ async def get_latency_report():
             "total_requests": len(times),
             "avg_ms": round(statistics.mean(times), 2),
             "p50_ms": round(statistics.median(times), 2),
+            "p90_ms": round(statistics.quantiles(times, n=100)[89] if len(times) > 1 else times[0], 2),
             "p95_ms": round(statistics.quantiles(times, n=100)[94] if len(times) > 1 else times[0], 2),
+            "p99_ms": round(statistics.quantiles(times, n=100)[98] if len(times) > 1 else times[0], 2),
             "max_ms": round(max(times), 2)
         }
         
