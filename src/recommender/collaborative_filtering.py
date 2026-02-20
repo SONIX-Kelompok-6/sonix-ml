@@ -1,151 +1,136 @@
+"""
+Collaborative Filtering Module
+------------------------------
+Provides a Deep Learning-based Neural Collaborative Filtering (NCF) engine.
+Refactored to minimize cyclomatic complexity and optimize inference speed.
+"""
+
 import logging
 import time
 import numpy as np
 import pandas as pd
-from scipy.sparse import csr_matrix
-from sklearn.neighbors import NearestNeighbors
-from typing import List, Dict, Optional, Any, Tuple
+import tensorflow as tf
+from typing import List, Dict, Optional, Tuple
 
-# Configure logger
 logger = logging.getLogger(__name__)
 
-class UserCollaborativeRecommender:
+class NeuralCollaborativeRecommender:
     """
-    User-Based Collaborative Filtering (UBCF) Engine.
-    Optimized for 'IDs Only' return strategy.
+    Neural Collaborative Filtering (NCF) Recommender Engine.
+    
+    Utilizes a pre-trained Deep Learning model to predict user-item interactions.
+    Designed for O(1) cyclomatic complexity and optimized payload (IDs only).
     """
 
-    def __init__(self, df_interactions: pd.DataFrame, shoe_metadata: pd.DataFrame):
-        self.cache: Dict[int, Tuple[List[Any], float]] = {} 
-        self.cache_ttl = 60 
-        self.shoe_metadata = shoe_metadata
-
-        # Buffer for Real-time changes
-        self.live_changes: Dict[int, Dict[str, float]] = {} 
+    def __init__(self, model_path: str, shoe_metadata: pd.DataFrame):
+        """
+        Initializes the NCF engine and loads the Keras model.
         
-        self.user_map: Dict[int, int] = {}
-        self.item_map: Dict[str, int] = {}
-        self.user_ids: List[int] = []
-        self.item_ids: List[str] = []
-        self.sparse_matrix: Optional[csr_matrix] = None
-        self.model: Optional[NearestNeighbors] = None
-
-        if df_interactions.empty:
-            logger.warning("CF Engine: Passive Mode.")
-            return
-
-        # 1. Pivot & Matrix Build
-        self.pivot_df = df_interactions.pivot(
-            index='user_id', columns='item_id', values='rating'
-        ).fillna(0)
+        Args:
+            model_path (str): Filepath to the trained .keras NCF model.
+            shoe_metadata (pd.DataFrame): DataFrame containing shoe details, 
+                                          must include a 'shoe_id' column.
         
-        self.user_ids = list(self.pivot_df.index)
-        self.item_ids = list(self.pivot_df.columns)
-        self.user_map = {uid: i for i, uid in enumerate(self.user_ids)}
+        Returns:
+            None
+        """
+        self.cache: Dict[int, Tuple[List[str], float]] = {}
+        self.cache_ttl = 60
+        self.item_ids = shoe_metadata['shoe_id'].tolist() if 'shoe_id' in shoe_metadata.columns else []
         self.item_map = {iid: i for i, iid in enumerate(self.item_ids)}
-        
-        self.sparse_matrix = csr_matrix(self.pivot_df.values)
-        self.model = NearestNeighbors(metric='cosine', algorithm='brute')
-        self.model.fit(self.sparse_matrix)
-        
-        logger.info(f"CF Engine Initialized: {len(self.user_ids)} Users.")
+        self.live_changes: Dict[int, Dict[str, float]] = {}
 
-    def _convert_rating(self, rating: Optional[int], is_like_action: bool = False) -> float:
-        if is_like_action: return 1.0
-        if rating is None or rating == 0: return 0.1
-        mapping = {1: -2.0, 2: -1.0, 3: 0.1, 4: 1.0, 5: 2.0}
-        return mapping.get(rating, 0.1)
+        try:
+            self.model = tf.keras.models.load_model(model_path, compile=False)
+            logger.info("Neural CF Engine Initialized.")
+        except Exception as e:
+            logger.error(f"Failed to load NCF model: {e}")
+            self.model = None
 
-    def get_realtime_recommendations(self, 
-                                     user_id: int, 
-                                     new_item_id: Optional[str] = None, 
-                                     new_rating_val: Optional[int] = None,
-                                     is_like: bool = False,
-                                     n_neighbors: int = 10) -> List[Any]:
+    def _get_cached(self, user_id: int, current_time: float) -> Optional[List[str]]:
         """
-        Returns: List of Shoe IDs (strings/ints) only.
-        """
-        current_time = time.time()
+        Retrieves recommendations from cache if they are still within TTL.
         
-        # 1. Update Buffer
-        if new_item_id and new_item_id in self.item_map:
-            score_val = self._convert_rating(new_rating_val, is_like_action=is_like)
-            if user_id not in self.live_changes: self.live_changes[user_id] = {}
-            self.live_changes[user_id][new_item_id] = score_val
-            if user_id in self.cache: del self.cache[user_id]
-
-        # 2. Cache Check
-        if new_item_id is None and user_id in self.cache:
+        Args:
+            user_id (int): The unique identifier of the user.
+            current_time (float): The current Unix timestamp.
+        
+        Returns:
+            Optional[List[str]]: List of cached shoe IDs, or None if invalid/missing.
+        """
+        if user_id in self.cache:
             result, timestamp = self.cache[user_id]
             if current_time - timestamp < self.cache_ttl:
                 return result
+        return None
 
-        # 3. Guards
-        if self.sparse_matrix is None or self.model is None: return []
-
-        # 4. Build User Vector
-        num_items = len(self.item_ids)
-        if user_id in self.user_map:
-            user_idx = self.user_map[user_id]
-            user_vector = self.sparse_matrix[user_idx].toarray()
-        else:
-            user_vector = np.zeros((1, num_items))
-
-        # 5. Apply Live Buffer
-        if user_id in self.live_changes:
-            for item_id, rating in self.live_changes[user_id].items():
-                if item_id in self.item_map:
-                    idx = self.item_map[item_id]
-                    user_vector[0, idx] = rating
-
-        if np.all(user_vector == 0): return []
-
-        # 6. Find Neighbors
-        total_users = len(self.user_ids)
-        effective_k = min(n_neighbors + 1, total_users)
-        try:
-            distances, indices = self.model.kneighbors(user_vector, n_neighbors=effective_k)
-        except Exception:
-            return []
-
-        # 7. Calculate Scores
-        rec_scores: Dict[str, float] = {}
-        for i, neighbor_idx in enumerate(indices[0]):
-            if user_id in self.user_map and neighbor_idx == self.user_map[user_id]: continue
-            similarity = 1.0 - distances[0][i]
-            if similarity <= 0: continue
-
-            neighbor_vector = self.sparse_matrix[neighbor_idx].toarray()[0]
-            liked_indices = np.where(neighbor_vector > 0)[0]
+    def _update_live_buffer(self, user_id: int, item_id: Optional[str], is_like: bool) -> None:
+        """
+        Updates the real-time interaction buffer for a specific user.
+        
+        Args:
+            user_id (int): The unique identifier of the user.
+            item_id (Optional[str]): The ID of the shoe interacted with.
+            is_like (bool): True if the interaction was a 'like', False otherwise.
             
-            for it_idx in liked_indices:
-                score = neighbor_vector[it_idx] * similarity
-                it_id = self.item_ids[it_idx]
-                rec_scores[it_id] = rec_scores.get(it_id, 0.0) + score
-
-        # 8. Filter & Sort
-        if not rec_scores: return []
+        Returns:
+            None
+        """
+        if not item_id or item_id not in self.item_map: 
+            return
         
-        seen_indices = np.where(user_vector[0] != 0)[0]
-        seen_items = {self.item_ids[i] for i in seen_indices}
+        weight = 1.0 if is_like else 0.5
+        self.live_changes.setdefault(user_id, {})[item_id] = weight
+        self.cache.pop(user_id, None)
 
-        candidates = [
-            {'shoe_id': k, 'cf_score': v} 
-            for k, v in rec_scores.items() 
-            if k not in seen_items
-        ]
+    def _predict_ncf(self, user_id: int) -> List[str]:
+        """
+        Executes the Deep Learning inference to predict top shoe matches.
         
-        if not candidates: return []
+        Args:
+            user_id (int): The unique identifier of the user.
+            
+        Returns:
+            List[str]: A list of the top 20 recommended shoe IDs.
+        """
+        if not self.model or not self.item_ids: 
+            return []
+            
+        user_tensor = np.full(len(self.item_ids), user_id)
+        item_tensor = np.arange(len(self.item_ids))
+        
+        predictions = self.model.predict([user_tensor, item_tensor], verbose=0).flatten()
+        
+        top_indices = predictions.argsort()[-20:][::-1]
+        return [self.item_ids[i] for i in top_indices]
 
-        candidates_df = pd.DataFrame(candidates)
-        candidates_df = candidates_df.sort_values('cf_score', ascending=False).head(20)
+    def get_realtime_recommendations(self, user_id: int, new_item_id: Optional[str] = None, 
+                                     is_like: bool = False) -> List[str]:
+        """
+        Retrieves real-time recommendations for a specific user.
+        
+        Orchestrates cache checking, live buffer updates, and NCF model inference.
+        
+        Args:
+            user_id (int): The unique identifier of the user.
+            new_item_id (Optional[str], optional): ID of a newly interacted shoe. Defaults to None.
+            is_like (bool, optional): Interaction type (True for like). Defaults to False.
+        
+        Returns:
+            List[str]: A list of recommended shoe IDs.
+        """
+        current_time = time.time()
+        
+        self._update_live_buffer(user_id, new_item_id, is_like)
 
-        # 9. Extract IDs Only (Optimization)
-        # We don't need full metadata enrichment anymore, just the IDs sorted by score
-        final_results = candidates_df['shoe_id'].tolist()
+        if not new_item_id:
+            cached_result = self._get_cached(user_id, current_time)
+            if cached_result: 
+                return cached_result
 
-        # 10. Save to Cache
-        if new_item_id is None:
-            self.cache[user_id] = (final_results, current_time)
+        final_ids = self._predict_ncf(user_id)
 
-        return final_results
+        if not new_item_id:
+            self.cache[user_id] = (final_ids, current_time)
+
+        return final_ids
