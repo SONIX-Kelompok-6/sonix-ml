@@ -1,8 +1,9 @@
 """
 Sonix-ML Database Integration Layer
 -----------------------------------
-This module handles all Supabase operations, including data ingestion for 
-training and real-time persistence of user interactions.
+Handles Supabase operations, including data ingestion for machine learning 
+training and real-time persistence of user interactions. Refactored with 
+guard clauses and vectorized mapping for O(1) complexity per block.
 """
 
 import os
@@ -31,52 +32,50 @@ except Exception as e:
     logger.error(f"Critical: Failed to initialize Supabase client. Error: {e}")
     supabase = None
 
+
 def fetch_and_merge_training_data() -> pd.DataFrame:
     """
     Retrieves interaction data (Favorites & Reviews) and merges them 
     into a unified Interaction Score DataFrame for the ML Engine.
+
+    Utilizes vectorized pandas operations to eliminate loop complexity 
+    when translating user ratings into normalized weights.
+
+    Returns:
+        pd.DataFrame: A unified dataframe containing 'user_id', 'item_id', 
+                      and aggregated 'rating' scores. Returns an empty dataframe 
+                      if no data or connection is available.
     """
     if not supabase:
         return pd.DataFrame(columns=['user_id', 'item_id', 'rating'])
 
     try:
-        # 1. Process Favorites (Like = 1.0)
-        res_fav = supabase.table("favorites").select("user_id, shoe_id").execute()
-        df_fav = pd.DataFrame()
-        
-        if res_fav.data:
-            df_fav = pd.DataFrame(res_fav.data)
-            df_fav = df_fav.rename(columns={'shoe_id': 'item_id'})
-            df_fav['score'] = 1.0  # Explicit like
-            df_fav = df_fav[['user_id', 'item_id', 'score']]
-
-        # 2. Process Reviews (Rating 1-5 -> Weighted Score)
-        res_rate = supabase.table("reviews").select("user_id, shoe_id, rating").execute()
-        df_rate = pd.DataFrame()
-        
-        if res_rate.data:
-            df_rate = pd.DataFrame(res_rate.data)
-            df_rate = df_rate.rename(columns={'shoe_id': 'item_id'})
-            
-            # Map 1-5 stars to -2.0 to +2.0 scale
-            def map_to_symmetric_scale(r):
-                mapping = {5: 2.0, 4: 1.0, 3: 0.1, 2: -1.0, 1: -2.0}
-                return mapping.get(r, 0.1)
-            
-            df_rate['score'] = df_rate['rating'].apply(map_to_symmetric_scale)
-            df_rate = df_rate[['user_id', 'item_id', 'score']]
-
-        # 3. Merge & Aggregate
         frames = []
-        if not df_fav.empty: frames.append(df_fav)
-        if not df_rate.empty: frames.append(df_rate)
-        
+
+        # 1. Process Favorites (Implicit Like = 1.0)
+        res_fav = supabase.table("favorites").select("user_id, shoe_id").execute()
+        if res_fav.data:
+            df_fav = pd.DataFrame(res_fav.data).rename(columns={'shoe_id': 'item_id'})
+            df_fav['score'] = 1.0
+            frames.append(df_fav[['user_id', 'item_id', 'score']])
+
+        # 2. Process Reviews (Explicit Rating 1-5 -> Weighted Score)
+        res_rate = supabase.table("reviews").select("user_id, shoe_id, rating").execute()
+        if res_rate.data:
+            df_rate = pd.DataFrame(res_rate.data).rename(columns={'shoe_id': 'item_id'})
+            
+            # Vectorized mapping replacing internal functions and loops
+            rating_map = {5: 2.0, 4: 1.0, 3: 0.1, 2: -1.0, 1: -2.0}
+            df_rate['score'] = df_rate['rating'].map(rating_map).fillna(0.1)
+            frames.append(df_rate[['user_id', 'item_id', 'score']])
+
+        # 3. Merge & Aggregate (Guard Clause for empty states)
         if not frames:
             return pd.DataFrame(columns=['user_id', 'item_id', 'rating'])
 
         df_combined = pd.concat(frames)
         
-        # Sum scores if user liked AND rated the same shoe
+        # Sum scores if a user liked AND rated the same shoe
         df_final = df_combined.groupby(['user_id', 'item_id'], as_index=False)['score'].sum()
         df_final = df_final.rename(columns={'score': 'rating'})
         
@@ -87,28 +86,36 @@ def fetch_and_merge_training_data() -> pd.DataFrame:
         logger.error(f"Error fetching training data: {e}")
         return pd.DataFrame(columns=['user_id', 'item_id', 'rating'])
 
-def save_interaction_routed(user_id: int, shoe_id: str, action_type: str, rating: Optional[int] = None):
+
+def save_interaction_routed(user_id: int, shoe_id: str, action_type: str, rating: Optional[int] = None) -> None:
     """
-    Persists user interactions (Like/Rate) to Supabase using UPSERT.
-    This ensures data isn't lost when the ML server restarts.
+    Persists real-time user interactions (Like/Rate) to Supabase.
+    
+    Uses UPSERT methodology to prevent duplicate entries and ensure 
+    data is preserved across ML server restarts.
+
+    Args:
+        user_id (int): Unique identifier of the user making the interaction.
+        shoe_id (str): Unique identifier of the target shoe.
+        action_type (str): Type of interaction ('like' or 'rate').
+        rating (Optional[int]): Numerical rating (1-5), required if action_type is 'rate'.
+
+    Returns:
+        None
     """
     if not supabase: 
         logger.warning("Supabase offline, skipping save.")
         return
 
     try:
-        # Normalize action type
         action = action_type.lower()
         
         if action == 'like':
-            # Upsert into favorites
             data = {"user_id": user_id, "shoe_id": shoe_id}
             supabase.table("favorites").upsert(data, on_conflict="user_id, shoe_id").execute()
             logger.info(f"Persisted LIKE for User {user_id} -> Shoe {shoe_id}")
             
-        elif action == 'rate':
-            if rating is None: return 
-            # Upsert into reviews
+        elif action == 'rate' and rating is not None:
             data = {"user_id": user_id, "shoe_id": shoe_id, "rating": rating}
             supabase.table("reviews").upsert(data, on_conflict="user_id, shoe_id").execute()
             logger.info(f"Persisted RATING {rating} for User {user_id} -> Shoe {shoe_id}")
@@ -116,16 +123,28 @@ def save_interaction_routed(user_id: int, shoe_id: str, action_type: str, rating
     except Exception as e:
         logger.error(f"Failed to persist interaction for user {user_id}: {e}")
 
+
 def fetch_shoes_by_type(shoe_type: str) -> pd.DataFrame:
     """
-    Optional utility to fetch raw shoe data if needed.
+    Retrieves raw shoe metadata directly from the database.
+    
+    Acts as a fallback fetching mechanism for the training pipeline 
+    if specific category segregation is needed downstream.
+
+    Args:
+        shoe_type (str): Category of the shoe ('road', 'trail', etc.).
+
+    Returns:
+        pd.DataFrame: A dataframe containing all fetched shoe records. 
+                      Returns an empty dataframe on failure.
     """
-    if not supabase: return pd.DataFrame()
+    if not supabase: 
+        return pd.DataFrame()
+        
     try:
-        # Fallback: Fetch all shoes, logic handled in python if needed
-        # This avoids errors if your DB IDs are integers (1, 2, 3) instead of strings (R001)
         response = supabase.table("shoes").select("*").execute()
-        if not response.data: return pd.DataFrame()
+        if not response.data: 
+            return pd.DataFrame()
         return pd.DataFrame(response.data)
     except Exception as e:
         logger.error(f"Failed to fetch shoes: {e}")
