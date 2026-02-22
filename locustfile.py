@@ -20,7 +20,7 @@ class SonixMlTester(HttpUser):
     """
     
     wait_time = between(1, 3)
-    host = "https://sonix-rush-sonix-ml-api.hf.space"
+    host = "https://sonix-ml-37851640508.asia-southeast2.run.app/"
 
     @task(2)
     def test_recommend_road(self):
