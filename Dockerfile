@@ -1,32 +1,29 @@
-# 1. Base Image: Use a lightweight Python version to minimize image size
+# 1. Base Image
 FROM python:3.11-slim
 
-# 2. Environment Setup: Prevent Python from buffering stdout/stderr
+# 2. Environment Setup
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# 3. Working Directory: Set the operational folder inside the container
+# 3. Working Directory
 WORKDIR /app
 
-# 4. Dependency Caching: Copy requirements file first
-# This allows Docker to cache installed packages if requirements.txt hasn't changed
+# 4. Dependency Caching
 COPY requirements.txt .
 
-# 5. Installation: Install dependencies
-# --no-cache-dir reduces the final image size
+# 5. Installation
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# 6. Source Code: Copy the application logic and model artifacts
+# 6. Source Code (Cukup ngopi 2 folder utama ini aja)
 COPY src/ src/
 COPY model_artifacts/ model_artifacts/
 
-# 7. Network: Expose port 8000 (Standard for FastAPI/Uvicorn)
-EXPOSE 8000
+# 7. Network (Udah disamain ke 7860)
+EXPOSE 7860
 
-# 8. Environment Variables: Set any necessary environment variables for the application
-ENV PYTHONPATH="${PYTHONPATH}:/app/src"
+# 8. Environment Variables (Warning PYTHONPATH udah dibenerin di sini)
+ENV PYTHONPATH="/app/src"
 
-# 9. Execution: Launch the application
-# --host 0.0.0.0 is mandatory for containerized environments to accept external traffic
+# 9. Execution
 CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "src.main:app", "--bind", "0.0.0.0:7860"]
